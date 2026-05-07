@@ -1,0 +1,187 @@
+"""
+Syntrix Scanner — FastAPI backend
+Automated security scanner for MCP servers and agentic AI deployments.
+
+Run locally:
+    pip install -r requirements.txt
+    uvicorn app.main:app --reload --port 8000
+"""
+
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, HttpUrl, Field
+from typing import Optional, Literal
+from datetime import datetime, timezone
+import uuid
+
+from app.scanner.engine import ScanEngine, ScanRequest, ScanResult
+from app.scanner.checks import REGISTERED_CHECKS
+from app.storage import store
+from app.config import settings
+
+app = FastAPI(
+    title="Syntrix Scanner API",
+    description="Security scanning for MCP servers and agentic AI deployments",
+    version="0.1.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
+
+# ========== MODELS ==========
+
+class ScanSubmit(BaseModel):
+    target_url: HttpUrl = Field(..., description="MCP server URL or agent endpoint")
+    scan_type: Literal["mcp", "agent_endpoint", "tunnel"] = "mcp"
+    depth: Literal["quick", "standard", "deep"] = "standard"
+    auth_header: Optional[str] = Field(None, description="Optional auth header for authenticated scans")
+    notify_email: Optional[str] = None
+
+
+class ScanSubmitResponse(BaseModel):
+    scan_id: str
+    status: str
+    target: str
+    submitted_at: datetime
+    estimated_seconds: int
+
+
+class ScanStatusResponse(BaseModel):
+    scan_id: str
+    status: Literal["queued", "running", "complete", "failed"]
+    target: str
+    progress: int
+    findings_count: int
+    risk_score: Optional[int] = None
+    risk_tier: Optional[str] = None
+    submitted_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+# ========== ROUTES ==========
+
+@app.get("/")
+def root():
+    return {
+        "service": "syntrix-scanner",
+        "version": "0.1.0",
+        "checks_loaded": len(REGISTERED_CHECKS),
+        "docs": "/docs",
+    }
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "ts": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/checks")
+def list_checks():
+    """Return the catalog of checks the scanner will run."""
+    return {
+        "total": len(REGISTERED_CHECKS),
+        "checks": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "category": c.category,
+                "owasp_mapping": c.owasp_mapping,
+                "severity_max": c.severity_max,
+                "type": c.check_type,
+            }
+            for c in REGISTERED_CHECKS
+        ],
+    }
+
+
+@app.post("/api/scans", response_model=ScanSubmitResponse)
+async def submit_scan(payload: ScanSubmit, bg: BackgroundTasks):
+    scan_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    estimates = {"quick": 30, "standard": 90, "deep": 300}
+
+    store.create_scan(
+        scan_id=scan_id,
+        target=str(payload.target_url),
+        scan_type=payload.scan_type,
+        depth=payload.depth,
+        submitted_at=now,
+    )
+
+    req = ScanRequest(
+        scan_id=scan_id,
+        target=str(payload.target_url),
+        scan_type=payload.scan_type,
+        depth=payload.depth,
+        auth_header=payload.auth_header,
+    )
+    bg.add_task(_run_scan_async, req)
+
+    return ScanSubmitResponse(
+        scan_id=scan_id,
+        status="queued",
+        target=str(payload.target_url),
+        submitted_at=now,
+        estimated_seconds=estimates[payload.depth],
+    )
+
+
+@app.get("/api/scans/{scan_id}", response_model=ScanStatusResponse)
+def get_scan(scan_id: str):
+    scan = store.get_scan(scan_id)
+    if not scan:
+        raise HTTPException(404, f"Scan {scan_id} not found")
+    return ScanStatusResponse(**scan)
+
+
+@app.get("/api/scans/{scan_id}/findings")
+def get_findings(scan_id: str):
+    scan = store.get_scan(scan_id)
+    if not scan:
+        raise HTTPException(404, f"Scan {scan_id} not found")
+    return {
+        "scan_id": scan_id,
+        "findings": store.get_findings(scan_id),
+        "summary": store.get_summary(scan_id),
+    }
+
+
+@app.get("/api/scans/{scan_id}/report")
+def get_report(scan_id: str, fmt: Literal["json", "markdown"] = "json"):
+    scan = store.get_scan(scan_id)
+    if not scan:
+        raise HTTPException(404, f"Scan {scan_id} not found")
+    if scan["status"] != "complete":
+        raise HTTPException(409, "Scan not complete")
+    findings = store.get_findings(scan_id)
+    if fmt == "markdown":
+        from app.scanner.report import to_markdown
+        return {"format": "markdown", "report": to_markdown(scan, findings)}
+    return {"scan": scan, "findings": findings}
+
+
+# ========== BACKGROUND SCAN RUNNER ==========
+
+async def _run_scan_async(req: ScanRequest):
+    engine = ScanEngine()
+    try:
+        store.update_status(req.scan_id, "running", progress=5)
+        result: ScanResult = await engine.run(
+            req,
+            on_progress=lambda p: store.update_status(req.scan_id, "running", progress=p),
+        )
+        store.save_findings(req.scan_id, result.findings)
+        store.complete_scan(
+            req.scan_id,
+            risk_score=result.risk_score,
+            risk_tier=result.risk_tier,
+            completed_at=datetime.now(timezone.utc),
+        )
+    except Exception as e:
+        store.fail_scan(req.scan_id, error=str(e))
