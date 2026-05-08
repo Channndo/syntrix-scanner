@@ -7,7 +7,7 @@ Run locally:
     uvicorn app.main:app --reload --port 8000
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl, Field
 from typing import Optional, Literal
@@ -16,6 +16,14 @@ import uuid
 
 from app.scanner.engine import ScanEngine, ScanRequest, ScanResult
 from app.scanner.checks import REGISTERED_CHECKS
+from app.auth import AuthenticatedUser, require_user, validate_auth_config
+from app.billing import (
+    create_billing_portal_session,
+    create_checkout_session,
+    handle_stripe_webhook,
+    require_active_subscription,
+    validate_billing_config,
+)
 from app.storage import store
 from app.config import settings
 
@@ -64,6 +72,10 @@ class ScanStatusResponse(BaseModel):
     completed_at: Optional[datetime] = None
 
 
+class CheckoutSessionRequest(BaseModel):
+    plan: Literal["pro", "team"] = "pro"
+
+
 # ========== ROUTES ==========
 
 @app.get("/")
@@ -82,7 +94,7 @@ def health():
 
 
 @app.get("/api/checks")
-def list_checks():
+def list_checks(_: AuthenticatedUser = Depends(require_user)):
     """Return the catalog of checks the scanner will run."""
     return {
         "total": len(REGISTERED_CHECKS),
@@ -101,13 +113,19 @@ def list_checks():
 
 
 @app.post("/api/scans", response_model=ScanSubmitResponse)
-async def submit_scan(payload: ScanSubmit, bg: BackgroundTasks):
+async def submit_scan(
+    payload: ScanSubmit,
+    bg: BackgroundTasks,
+    user: AuthenticatedUser = Depends(require_active_subscription),
+):
     scan_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
     estimates = {"quick": 30, "standard": 90, "deep": 300}
+    store.ensure_user(user.sub, email=user.email)
 
     store.create_scan(
         scan_id=scan_id,
+        owner_sub=user.sub,
         target=str(payload.target_url),
         scan_type=payload.scan_type,
         depth=payload.depth,
@@ -133,18 +151,22 @@ async def submit_scan(payload: ScanSubmit, bg: BackgroundTasks):
 
 
 @app.get("/api/scans/{scan_id}", response_model=ScanStatusResponse)
-def get_scan(scan_id: str):
+def get_scan(scan_id: str, user: AuthenticatedUser = Depends(require_user)):
     scan = store.get_scan(scan_id)
     if not scan:
         raise HTTPException(404, f"Scan {scan_id} not found")
+    if scan.get("owner_sub") != user.sub:
+        raise HTTPException(403, "Not authorized to access this scan")
     return ScanStatusResponse(**scan)
 
 
 @app.get("/api/scans/{scan_id}/findings")
-def get_findings(scan_id: str):
+def get_findings(scan_id: str, user: AuthenticatedUser = Depends(require_user)):
     scan = store.get_scan(scan_id)
     if not scan:
         raise HTTPException(404, f"Scan {scan_id} not found")
+    if scan.get("owner_sub") != user.sub:
+        raise HTTPException(403, "Not authorized to access this scan")
     return {
         "scan_id": scan_id,
         "findings": store.get_findings(scan_id),
@@ -153,10 +175,12 @@ def get_findings(scan_id: str):
 
 
 @app.get("/api/scans/{scan_id}/report")
-def get_report(scan_id: str, fmt: Literal["json", "markdown"] = "json"):
+def get_report(scan_id: str, fmt: Literal["json", "markdown"] = "json", user: AuthenticatedUser = Depends(require_user)):
     scan = store.get_scan(scan_id)
     if not scan:
         raise HTTPException(404, f"Scan {scan_id} not found")
+    if scan.get("owner_sub") != user.sub:
+        raise HTTPException(403, "Not authorized to access this scan")
     if scan["status"] != "complete":
         raise HTTPException(409, "Scan not complete")
     findings = store.get_findings(scan_id)
@@ -166,7 +190,38 @@ def get_report(scan_id: str, fmt: Literal["json", "markdown"] = "json"):
     return {"scan": scan, "findings": findings}
 
 
+# ========== BILLING ROUTES ==========
+
+@app.post("/api/billing/checkout-session")
+def create_checkout(
+    payload: CheckoutSessionRequest,
+    user: AuthenticatedUser = Depends(require_user),
+):
+    store.ensure_user(user.sub, email=user.email)
+    price_id = settings.stripe_price_pro if payload.plan == "pro" else settings.stripe_price_team
+    if not price_id:
+        raise HTTPException(503, f"Stripe price is not configured for plan '{payload.plan}'")
+    return create_checkout_session(user=user, price_id=price_id)
+
+
+@app.post("/api/billing/portal-session")
+def create_portal(user: AuthenticatedUser = Depends(require_user)):
+    store.ensure_user(user.sub, email=user.email)
+    return create_billing_portal_session(user)
+
+
+@app.post("/api/billing/webhook")
+async def billing_webhook(request: Request):
+    return await handle_stripe_webhook(request)
+
+
 # ========== BACKGROUND SCAN RUNNER ==========
+
+
+@app.on_event("startup")
+def _validate_startup_config():
+    validate_auth_config()
+    validate_billing_config()
 
 async def _run_scan_async(req: ScanRequest):
     engine = ScanEngine()

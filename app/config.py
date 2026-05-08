@@ -4,6 +4,12 @@ import os
 from typing import List
 
 
+def _to_bool(raw: str, default: bool = False) -> bool:
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Settings:
     """Environment-driven config. Override via env vars in deployment."""
 
@@ -28,10 +34,28 @@ class Settings:
     ]
 
     # Whether to allow scanning of localhost (set true only for self-test)
-    allow_localhost_scans: bool = os.getenv("SYNTRIX_ALLOW_LOCALHOST", "false").lower() == "true"
+    allow_localhost_scans: bool = _to_bool(os.getenv("SYNTRIX_ALLOW_LOCALHOST"), False)
 
     # User agent for outbound probes
     probe_user_agent: str = "Syntrix-Scanner/0.1 (+https://syntrix.solutions/scanner)"
+
+    # Data store
+    sqlite_path: str = os.getenv("SYNTRIX_SQLITE_PATH", "syntrix.db")
+
+    # Auth flags/settings
+    auth_required: bool = _to_bool(os.getenv("SYNTRIX_AUTH_REQUIRED"), True)
+    auth0_domain: str = os.getenv("AUTH0_DOMAIN", "")
+    auth0_audience: str = os.getenv("AUTH0_AUDIENCE", "")
+    auth0_issuer: str = os.getenv("AUTH0_ISSUER", "")
+    auth0_jwks_url: str = os.getenv("AUTH0_JWKS_URL", "")
+
+    # Stripe billing settings
+    billing_required: bool = _to_bool(os.getenv("SYNTRIX_BILLING_REQUIRED"), True)
+    stripe_secret_key: str = os.getenv("STRIPE_SECRET_KEY", "")
+    stripe_webhook_secret: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    stripe_price_pro: str = os.getenv("STRIPE_PRICE_PRO", "")
+    stripe_price_team: str = os.getenv("STRIPE_PRICE_TEAM", "")
+    app_base_url: str = os.getenv("APP_BASE_URL", "https://syntrix.solutions")
 
 
 settings = Settings()
