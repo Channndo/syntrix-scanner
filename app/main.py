@@ -80,6 +80,9 @@ class CheckoutSessionRequest(BaseModel):
 class WaitlistIngestPayload(BaseModel):
     email: str
     name: str = ""
+    phone: str = ""
+    business_address: str = ""
+    referral_source: str = ""
     source: str = "signup_page"
     type: str = "waitlist"
     ts: Optional[str] = None
@@ -124,6 +127,9 @@ async def ingest_waitlist_lead(request: Request, payload: WaitlistIngestPayload)
     store.append_waitlist(
         email=email,
         name=(payload.name or "").strip()[:200],
+        phone=(payload.phone or "").strip()[:40],
+        business_address=(payload.business_address or "").strip()[:500],
+        referral_source=(payload.referral_source or "").strip()[:200],
         source=(payload.source or "").strip()[:120],
         entry_type=(payload.type or "").strip()[:80],
     )

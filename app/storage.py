@@ -86,6 +86,9 @@ class _SQLiteStore:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     email TEXT NOT NULL,
                     name TEXT NOT NULL DEFAULT '',
+                    phone TEXT NOT NULL DEFAULT '',
+                    business_address TEXT NOT NULL DEFAULT '',
+                    referral_source TEXT NOT NULL DEFAULT '',
                     source TEXT NOT NULL DEFAULT '',
                     type TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL
@@ -94,12 +97,35 @@ class _SQLiteStore:
                 CREATE INDEX IF NOT EXISTS ix_waitlist_leads_created ON waitlist_leads(created_at);
                 """
             )
+        # Must run outside the block above: Lock is not reentrant.
+        self._ensure_waitlist_extra_columns()
+
+    def _ensure_waitlist_extra_columns(self) -> None:
+        """Migrate older DBs that lack extended signup columns."""
+        need = [
+            ("phone", "TEXT NOT NULL DEFAULT ''"),
+            ("business_address", "TEXT NOT NULL DEFAULT ''"),
+            ("referral_source", "TEXT NOT NULL DEFAULT ''"),
+        ]
+        with self._lock, self._conn:
+            have = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(waitlist_leads)").fetchall()
+            }
+            for col, decl in need:
+                if col not in have:
+                    self._conn.execute(
+                        f"ALTER TABLE waitlist_leads ADD COLUMN {col} {decl}"
+                    )
 
     def append_waitlist(
         self,
         email: str,
         *,
         name: str = "",
+        phone: str = "",
+        business_address: str = "",
+        referral_source: str = "",
         source: str = "",
         entry_type: str = "",
         created_at: Optional[datetime] = None,
@@ -108,26 +134,55 @@ class _SQLiteStore:
         with self._lock, self._conn:
             self._conn.execute(
                 """
-                INSERT INTO waitlist_leads (email, name, source, type, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO waitlist_leads (
+                  email, name, phone, business_address, referral_source, source, type, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (email, name, source, entry_type, ts),
+                (
+                    email,
+                    name,
+                    phone,
+                    business_address,
+                    referral_source,
+                    source,
+                    entry_type,
+                    ts,
+                ),
             )
 
     def export_waitlist_csv(self) -> str:
         """RFC-style CSV; utf-8 BOM may be added by the HTTP handler for Excel."""
         buf = io.StringIO()
         writer = csv.writer(buf)
-        writer.writerow(["email", "name", "source", "type", "created_at"])
+        writer.writerow(
+            [
+                "email",
+                "name",
+                "phone",
+                "business_address",
+                "referral_source",
+                "source",
+                "type",
+                "created_at",
+            ]
+        )
         with self._lock:
             rows = self._conn.execute(
-                "SELECT email, name, source, type, created_at FROM waitlist_leads ORDER BY id ASC"
+                """
+                SELECT email, name, phone, business_address, referral_source,
+                       source, type, created_at
+                FROM waitlist_leads ORDER BY id ASC
+                """
             ).fetchall()
         for row in rows:
             writer.writerow(
                 [
                     row["email"],
                     row["name"],
+                    row["phone"],
+                    row["business_address"],
+                    row["referral_source"],
                     row["source"],
                     row["type"],
                     row["created_at"],
