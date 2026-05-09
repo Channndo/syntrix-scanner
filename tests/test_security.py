@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
-from app.auth import AuthenticatedUser, require_user
+from app.auth import AuthenticatedUser, maybe_derive_auth0_issuer, require_user
 from app.billing import require_active_subscription
 from app.config import settings
 from app.main import app
@@ -23,6 +23,24 @@ def _base_payload() -> dict:
         "scan_type": "mcp",
         "depth": "quick",
     }
+
+
+def test_maybe_derive_auth0_issuer():
+    orig_d = settings.auth0_domain
+    orig_i = settings.auth0_issuer
+    try:
+        settings.auth0_domain = "abc.us.auth0.com"
+        settings.auth0_issuer = ""
+        maybe_derive_auth0_issuer()
+        assert settings.auth0_issuer == "https://abc.us.auth0.com/"
+
+        settings.auth0_issuer = ""
+        settings.auth0_domain = "https://abc.us.auth0.com"
+        maybe_derive_auth0_issuer()
+        assert settings.auth0_issuer == "https://abc.us.auth0.com/"
+    finally:
+        settings.auth0_domain = orig_d
+        settings.auth0_issuer = orig_i
 
 
 def test_unauthenticated_scan_rejected():

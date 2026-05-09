@@ -25,6 +25,22 @@ class AuthenticatedUser:
     raw_claims: Dict[str, Any]
 
 
+def maybe_derive_auth0_issuer() -> None:
+    """If AUTH0_ISSUER is unset, derive https://{{AUTH0_DOMAIN}}/ (Auth0 canonical tenant)."""
+
+    issuer = (getattr(settings, "auth0_issuer", None) or "").strip()
+    if issuer:
+        return
+    domain = (settings.auth0_domain or "").strip()
+    if not domain:
+        return
+    if domain.lower().startswith("http://") or domain.lower().startswith("https://"):
+        base = domain.rstrip("/")
+    else:
+        base = f"https://{domain.rstrip('/')}"
+    settings.auth0_issuer = f"{base}/"
+
+
 def _required_config_errors() -> list[str]:
     errors: list[str] = []
     if not settings.auth0_domain:
@@ -32,13 +48,17 @@ def _required_config_errors() -> list[str]:
     if not settings.auth0_audience:
         errors.append("AUTH0_AUDIENCE is required when SYNTRIX_AUTH_REQUIRED=true")
     if not settings.auth0_issuer:
-        errors.append("AUTH0_ISSUER is required when SYNTRIX_AUTH_REQUIRED=true")
+        errors.append(
+            "AUTH0_ISSUER is missing and could not be derived — set AUTH0_DOMAIN or AUTH0_ISSUER explicitly "
+            "(custom domains often need AUTH0_ISSUER set to the canonical issuer URL from JWTs)."
+        )
     return errors
 
 
 def validate_auth_config() -> None:
     if not settings.auth_required:
         return
+    maybe_derive_auth0_issuer()
     errors = _required_config_errors()
     if errors:
         raise RuntimeError("Invalid auth config: " + "; ".join(errors))
@@ -64,7 +84,7 @@ def _get_jwks() -> Dict[str, Any]:
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Failed to fetch Auth0 JWKS: {exc}",
+            detail=f"Failed to fetch identity JWKS: {exc}",
         ) from exc
 
     _jwks_cache = r.json()
@@ -92,12 +112,15 @@ def _verify_token(token: str) -> Dict[str, Any]:
             raise HTTPException(status_code=401, detail="Missing token key ID")
         jwk = _select_jwk(kid)
         public_key = jwt.algorithms.RSAAlgorithm.from_jwk(jwk)
+        base_iss = settings.auth0_issuer.rstrip("/")
+        issuer_claims = [base_iss, f"{base_iss}/"]
+
         claims = jwt.decode(
             token,
             key=public_key,
             algorithms=["RS256"],
             audience=settings.auth0_audience,
-            issuer=settings.auth0_issuer.rstrip("/"),
+            issuer=issuer_claims,
         )
         return claims
     except HTTPException:
