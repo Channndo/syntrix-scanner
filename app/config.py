@@ -49,7 +49,7 @@ class Settings:
     auth0_issuer: str = os.getenv("AUTH0_ISSUER", "")
     auth0_jwks_url: str = os.getenv("AUTH0_JWKS_URL", "")
 
-    # Email/password accounts (Argon2id + HS256 JWT). Complements or replaces Auth0.
+    # Email/password accounts (Argon2id + HS256 JWT). Set SYNTRIX_PASSWORD_AUTH=true on the API host (requires JWT secret).
     password_auth_enabled: bool = _to_bool(os.getenv("SYNTRIX_PASSWORD_AUTH"), False)
     jwt_secret: str = os.getenv("SYNTRIX_JWT_SECRET", "")
     # Defaults to AUTH0_AUDIENCE / SYNTRIX_JWT_AUDIENCE / syntrix-api — see password_auth.effective_jwt_audience()
