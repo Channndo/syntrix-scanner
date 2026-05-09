@@ -8,6 +8,7 @@ Run locally:
 """
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl, Field
 from typing import Optional, Literal
@@ -127,6 +128,32 @@ async def ingest_waitlist_lead(request: Request, payload: WaitlistIngestPayload)
         entry_type=(payload.type or "").strip()[:80],
     )
     return {"ok": True}
+
+
+@app.get("/api/public/waitlist/export")
+def export_waitlist_csv_file(request: Request):
+    """
+    Download all waitlist rows as a .csv file (open in Excel, Numbers, Google Sheets, etc.).
+    Same Authorization: Bearer <SYNTRIX_WAITLIST_INGEST_SECRET> as POST /api/public/waitlist.
+    """
+    secret = (settings.waitlist_ingest_secret or "").strip()
+    if not secret:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    auth = (request.headers.get("authorization") or "").strip()
+    if auth != f"Bearer {secret}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    body = store.export_waitlist_csv()
+    # UTF-8 BOM helps Microsoft Excel recognize encoding when double-clicking the file.
+    payload = "\ufeff" + body
+    return Response(
+        content=payload.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="syntrix-waitlist.csv"',
+        },
+    )
 
 
 @app.get("/api/checks")

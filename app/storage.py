@@ -4,6 +4,8 @@ Storage layer — sqlite-backed for account, subscription, and scan ownership.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -111,6 +113,27 @@ class _SQLiteStore:
                 """,
                 (email, name, source, entry_type, ts),
             )
+
+    def export_waitlist_csv(self) -> str:
+        """RFC-style CSV; utf-8 BOM may be added by the HTTP handler for Excel."""
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["email", "name", "source", "type", "created_at"])
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT email, name, source, type, created_at FROM waitlist_leads ORDER BY id ASC"
+            ).fetchall()
+        for row in rows:
+            writer.writerow(
+                [
+                    row["email"],
+                    row["name"],
+                    row["source"],
+                    row["type"],
+                    row["created_at"],
+                ]
+            )
+        return buf.getvalue()
 
     def ensure_user(self, auth_sub: str, email: Optional[str] = None) -> None:
         now = _to_iso(datetime.now(timezone.utc))

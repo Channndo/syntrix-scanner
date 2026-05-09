@@ -81,6 +81,33 @@ def test_public_waitlist_requires_matching_bearer():
         settings.waitlist_ingest_secret = orig_secret
 
 
+def test_waitlist_export_requires_secret():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_auth_req = settings.auth_required
+    orig_blk = settings.billing_required
+    orig_secret = settings.waitlist_ingest_secret
+    settings.auth_required = False
+    settings.billing_required = False
+    settings.waitlist_ingest_secret = "exp-secret"
+    try:
+        store.append_waitlist("csv@example.com", name="CSV User", source="t", entry_type="early")
+        with TestClient(app) as client:
+            bad = client.get("/api/public/waitlist/export")
+            assert bad.status_code == 401
+            ok = client.get(
+                "/api/public/waitlist/export",
+                headers={"authorization": "Bearer exp-secret"},
+            )
+            assert ok.status_code == 200
+            assert b"email" in ok.content
+            assert b"csv@example.com" in ok.content
+    finally:
+        settings.auth_required = orig_auth_req
+        settings.billing_required = orig_blk
+        settings.waitlist_ingest_secret = orig_secret
+
+
 def test_maybe_derive_auth0_issuer():
     orig_d = settings.auth0_domain
     orig_i = settings.auth0_issuer
