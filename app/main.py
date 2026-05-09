@@ -88,6 +88,8 @@ class CheckoutSessionRequest(BaseModel):
 class PasswordRegister(BaseModel):
     email: str = Field(..., max_length=320)
     password: str = Field(..., max_length=256)
+    first_name: Optional[str] = Field(None, max_length=100)
+    last_name: Optional[str] = Field(None, max_length=100)
 
 
 class PasswordLogin(BaseModel):
@@ -152,7 +154,12 @@ async def auth_password_register(request: Request, payload: PasswordRegister):
     """Create an email/password account (Argon2id). Returns a bearer JWT for API calls."""
     _require_password_auth_enabled()
     rate_limit_or_429(client_ip(request))
-    return register_email_password(payload.email, payload.password)
+    return register_email_password(
+        payload.email,
+        payload.password,
+        (payload.first_name or "").strip(),
+        (payload.last_name or "").strip(),
+    )
 
 
 @app.post("/api/auth/password/login")

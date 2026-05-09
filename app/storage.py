@@ -110,6 +110,7 @@ class _SQLiteStore:
         # Must run outside the block above: Lock is not reentrant.
         self._ensure_waitlist_extra_columns()
         self._ensure_users_authorized_column()
+        self._ensure_user_name_columns()
         self._ensure_guest_scan_columns()
         self._ensure_guest_daily_table()
 
@@ -133,6 +134,20 @@ class _SQLiteStore:
                 )
                 """
             )
+
+    def _ensure_user_name_columns(self) -> None:
+        with self._lock, self._conn:
+            cols = {
+                row[1] for row in self._conn.execute("PRAGMA table_info(users)").fetchall()
+            }
+            if "first_name" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE users ADD COLUMN first_name TEXT NOT NULL DEFAULT ''"
+                )
+            if "last_name" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE users ADD COLUMN last_name TEXT NOT NULL DEFAULT ''"
+                )
 
     def _ensure_users_authorized_column(self) -> None:
         """Add users.authorized for account approval / allowlisting."""
@@ -241,20 +256,27 @@ class _SQLiteStore:
         email: Optional[str] = None,
         *,
         authorized_override: Optional[bool] = None,
+        first_name: Optional[str] = None,
+        last_name: Optional[str] = None,
     ) -> None:
         now = _to_iso(datetime.now(timezone.utc))
         if authorized_override is None:
             auth_int = settings.initial_authorized_as_int(email)
         else:
             auth_int = 1 if authorized_override else 0
+        fn = (first_name or "").strip()[:100]
+        ln = (last_name or "").strip()[:100]
         with self._lock, self._conn:
             self._conn.execute(
                 """
-                INSERT INTO users (auth_sub, email, created_at, authorized)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(auth_sub) DO UPDATE SET email=COALESCE(excluded.email, users.email)
+                INSERT INTO users (auth_sub, email, created_at, authorized, first_name, last_name)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(auth_sub) DO UPDATE SET
+                  email=COALESCE(excluded.email, users.email),
+                  first_name=CASE WHEN excluded.first_name != '' THEN excluded.first_name ELSE users.first_name END,
+                  last_name=CASE WHEN excluded.last_name != '' THEN excluded.last_name ELSE users.last_name END
                 """,
-                (auth_sub, email, now, auth_int),
+                (auth_sub, email, now, auth_int, fn, ln),
             )
 
             self._conn.execute(

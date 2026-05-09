@@ -135,7 +135,12 @@ def rate_limit_or_429(ip: str) -> None:
         hits.append(now)
 
 
-def register_email_password(email: str, password: str) -> Dict[str, str]:
+def register_email_password(
+    email: str,
+    password: str,
+    first_name: str = "",
+    last_name: str = "",
+) -> Dict[str, str]:
     validate_password_policy(password)
     norm_email = email.strip().lower()
     if len(norm_email) < 3 or "@" not in norm_email:
@@ -145,7 +150,7 @@ def register_email_password(email: str, password: str) -> Dict[str, str]:
 
     user_sub = f"local:{uuid.uuid4()}"
     pwd_hash = _password_hasher.hash(password)
-    store.ensure_user(user_sub, norm_email)
+    store.ensure_user(user_sub, norm_email, first_name=first_name, last_name=last_name)
     try:
         store.register_password_account(user_sub, norm_email, pwd_hash)
     except sqlite3.IntegrityError:
