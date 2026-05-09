@@ -9,6 +9,7 @@ import stripe
 from fastapi import Depends, Header, HTTPException, Request, status
 
 from app.auth import AuthenticatedUser, require_user
+from app.authorization import require_authorized_account
 from app.config import settings
 from app.storage import store
 
@@ -37,7 +38,9 @@ def _is_active_subscription(status: str) -> bool:
     return status in {"active", "trialing"}
 
 
-def require_active_subscription(user: AuthenticatedUser = Depends(require_user)) -> AuthenticatedUser:
+def require_active_subscription(
+    user: AuthenticatedUser = Depends(require_authorized_account),
+) -> AuthenticatedUser:
     if not settings.billing_required:
         return user
     sub = store.get_subscription(user.sub)
@@ -101,14 +104,17 @@ def _handle_subscription_payload(sub: Dict[str, Any]) -> None:
     price_obj = item_data.get("price") or {}
     plan_id = price_obj.get("id")
 
+    st = sub.get("status", "inactive")
     store.set_subscription(
         auth_sub=auth_sub,
-        status=sub.get("status", "inactive"),
+        status=st,
         stripe_customer_id=customer_id,
         stripe_subscription_id=sub.get("id"),
         plan_id=plan_id,
         current_period_end=_to_dt(sub.get("current_period_end")),
     )
+    if _is_active_subscription(st):
+        store.set_account_authorized(auth_sub, True)
 
 
 async def handle_stripe_webhook(
@@ -139,6 +145,7 @@ async def handle_stripe_webhook(
                 stripe_customer_id=data_obj.get("customer"),
                 stripe_subscription_id=data_obj.get("subscription"),
             )
+            store.set_account_authorized(auth_sub, True)
     elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
         _handle_subscription_payload(data_obj)
     elif event_type == "invoice.paid":

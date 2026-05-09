@@ -7,6 +7,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import secrets
 import sqlite3
 from datetime import datetime, timezone
 from threading import Lock
@@ -95,10 +96,54 @@ class _SQLiteStore:
                 );
                 CREATE INDEX IF NOT EXISTS ix_waitlist_leads_email ON waitlist_leads(email);
                 CREATE INDEX IF NOT EXISTS ix_waitlist_leads_created ON waitlist_leads(created_at);
+
+                CREATE TABLE IF NOT EXISTS password_accounts (
+                    user_sub TEXT PRIMARY KEY,
+                    email TEXT UNIQUE NOT NULL COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (user_sub) REFERENCES users(auth_sub) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS ix_password_accounts_email ON password_accounts(email);
                 """
             )
         # Must run outside the block above: Lock is not reentrant.
         self._ensure_waitlist_extra_columns()
+        self._ensure_users_authorized_column()
+        self._ensure_guest_scan_columns()
+        self._ensure_guest_daily_table()
+
+    def _ensure_guest_scan_columns(self) -> None:
+        with self._lock, self._conn:
+            cols = {
+                row[1] for row in self._conn.execute("PRAGMA table_info(scans)").fetchall()
+            }
+            if "guest_poll_token" not in cols:
+                self._conn.execute("ALTER TABLE scans ADD COLUMN guest_poll_token TEXT")
+
+    def _ensure_guest_daily_table(self) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS guest_daily_scans (
+                    guest_key TEXT NOT NULL,
+                    day_utc TEXT NOT NULL,
+                    scan_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (guest_key, day_utc)
+                )
+                """
+            )
+
+    def _ensure_users_authorized_column(self) -> None:
+        """Add users.authorized for account approval / allowlisting."""
+        with self._lock, self._conn:
+            cols = {
+                row[1] for row in self._conn.execute("PRAGMA table_info(users)").fetchall()
+            }
+            if "authorized" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE users ADD COLUMN authorized INTEGER NOT NULL DEFAULT 1"
+                )
 
     def _ensure_waitlist_extra_columns(self) -> None:
         """Migrate older DBs that lack extended signup columns."""
@@ -190,16 +235,26 @@ class _SQLiteStore:
             )
         return buf.getvalue()
 
-    def ensure_user(self, auth_sub: str, email: Optional[str] = None) -> None:
+    def ensure_user(
+        self,
+        auth_sub: str,
+        email: Optional[str] = None,
+        *,
+        authorized_override: Optional[bool] = None,
+    ) -> None:
         now = _to_iso(datetime.now(timezone.utc))
+        if authorized_override is None:
+            auth_int = settings.initial_authorized_as_int(email)
+        else:
+            auth_int = 1 if authorized_override else 0
         with self._lock, self._conn:
             self._conn.execute(
                 """
-                INSERT INTO users (auth_sub, email, created_at)
-                VALUES (?, ?, ?)
+                INSERT INTO users (auth_sub, email, created_at, authorized)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(auth_sub) DO UPDATE SET email=COALESCE(excluded.email, users.email)
                 """,
-                (auth_sub, email, now),
+                (auth_sub, email, now, auth_int),
             )
 
             self._conn.execute(
@@ -219,21 +274,75 @@ class _SQLiteStore:
         scan_type: str,
         depth: str,
         submitted_at: datetime,
+        guest_poll_token: Optional[str] = None,
     ):
         with self._lock, self._conn:
             self._conn.execute(
                 """
                 INSERT INTO scans
-                  (scan_id, owner_sub, target, scan_type, depth, status, progress, findings_count, risk_score, risk_tier, submitted_at, completed_at, error)
+                  (scan_id, owner_sub, target, scan_type, depth, status, progress, findings_count, risk_score, risk_tier, submitted_at, completed_at, error, guest_poll_token)
                 VALUES
-                  (?, ?, ?, ?, ?, 'queued', 0, 0, NULL, NULL, ?, NULL, NULL)
+                  (?, ?, ?, ?, ?, 'queued', 0, 0, NULL, NULL, ?, NULL, NULL, ?)
                 """,
-                (scan_id, owner_sub, target, scan_type, depth, _to_iso(submitted_at)),
+                (
+                    scan_id,
+                    owner_sub,
+                    target,
+                    scan_type,
+                    depth,
+                    _to_iso(submitted_at),
+                    guest_poll_token,
+                ),
             )
             self._conn.execute(
                 "INSERT OR REPLACE INTO findings (scan_id, findings_json) VALUES (?, '[]')",
                 (scan_id,),
             )
+
+    def try_acquire_guest_scan_slot(self, guest_key: str) -> bool:
+        """
+        Reserve one guest scan for this UTC calendar day. Returns False if quota exceeded.
+        """
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        limit = max(1, int(settings.guest_scans_per_utc_day))
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT scan_count FROM guest_daily_scans WHERE guest_key = ? AND day_utc = ?",
+                (guest_key, day),
+            ).fetchone()
+            used = int(row[0]) if row else 0
+            if used >= limit:
+                return False
+            if row:
+                self._conn.execute(
+                    """
+                    UPDATE guest_daily_scans SET scan_count = scan_count + 1
+                    WHERE guest_key = ? AND day_utc = ?
+                    """,
+                    (guest_key, day),
+                )
+            else:
+                self._conn.execute(
+                    """
+                    INSERT INTO guest_daily_scans (guest_key, day_utc, scan_count)
+                    VALUES (?, ?, 1)
+                    """,
+                    (guest_key, day),
+                )
+        return True
+
+    def guest_poll_token_matches(self, scan_id: str, token: str) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT guest_poll_token FROM scans WHERE scan_id = ?",
+                (scan_id,),
+            ).fetchone()
+        if not row or row[0] is None:
+            return False
+        try:
+            return secrets.compare_digest(str(row[0]), str(token))
+        except (TypeError, ValueError):
+            return False
 
     def get_scan(self, scan_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -376,6 +485,54 @@ class _SQLiteStore:
                 (stripe_customer_id,),
             ).fetchone()
         return row["auth_sub"] if row else None
+
+    def get_password_account_by_email(self, email: str) -> Optional[Dict[str, str]]:
+        """Return user_sub and Argon2 hash for normalized email, if registered."""
+        norm = email.strip().lower()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT user_sub, password_hash FROM password_accounts WHERE email = ?",
+                (norm,),
+            ).fetchone()
+        if not row:
+            return None
+        return {"user_sub": row["user_sub"], "password_hash": row["password_hash"]}
+
+    def get_user(self, auth_sub: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM users WHERE auth_sub = ?", (auth_sub,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_auth_sub_by_email(self, email: str) -> Optional[str]:
+        em = email.strip().lower()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT auth_sub FROM users WHERE lower(coalesce(email,'')) = ?",
+                (em,),
+            ).fetchone()
+        return str(row["auth_sub"]) if row else None
+
+    def set_account_authorized(self, auth_sub: str, authorized: bool) -> None:
+        v = 1 if authorized else 0
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE users SET authorized = ? WHERE auth_sub = ?",
+                (v, auth_sub),
+            )
+
+    def register_password_account(self, user_sub: str, email: str, password_hash: str) -> None:
+        now = _to_iso(datetime.now(timezone.utc))
+        em = email.strip().lower()
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO password_accounts (user_sub, email, password_hash, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_sub, em, password_hash, now),
+            )
 
 
 store = _SQLiteStore()

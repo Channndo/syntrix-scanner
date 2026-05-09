@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
@@ -14,6 +15,8 @@ def _reset_db() -> None:
         store._conn.execute("DELETE FROM findings")
         store._conn.execute("DELETE FROM scans")
         store._conn.execute("DELETE FROM subscriptions")
+        store._conn.execute("DELETE FROM password_accounts")
+        store._conn.execute("DELETE FROM guest_daily_scans")
         store._conn.execute("DELETE FROM users")
         store._conn.execute("DELETE FROM waitlist_leads")
 
@@ -179,6 +182,157 @@ def test_scan_ownership_enforced():
         app.dependency_overrides[require_user] = lambda: intruder
         forbidden = client.get(f"/api/scans/{scan_id}")
         assert forbidden.status_code == 403
+
+
+def test_checks_blocked_when_account_not_authorized():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_gate = settings.require_authorized_account
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_aud = settings.jwt_audience
+    orig_auth_req = settings.auth_required
+    orig_billing = settings.billing_required
+    try:
+        settings.require_authorized_account = True
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "u" * 40
+        settings.jwt_audience = "gate-aud"
+        settings.auth_required = True
+        settings.billing_required = False
+
+        with TestClient(app) as client:
+            reg = client.post(
+                "/api/auth/password/register",
+                json={"email": "pending@example.com", "password": "correcthorse123!"},
+            )
+            assert reg.status_code == 200
+            token = reg.json()["access_token"]
+            blocked = client.get(
+                "/api/checks",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert blocked.status_code == 403
+            me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+            assert me.status_code == 200
+            assert me.json().get("authorized") is False
+    finally:
+        settings.require_authorized_account = orig_gate
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.jwt_audience = orig_aud
+        settings.auth_required = orig_auth_req
+        settings.billing_required = orig_billing
+
+
+def test_allowlist_authorizes_immediately():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_gate = settings.require_authorized_account
+    orig_allow = settings.authorized_emails
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_aud = settings.jwt_audience
+    orig_auth_req = settings.auth_required
+    orig_billing = settings.billing_required
+    try:
+        settings.require_authorized_account = True
+        settings.authorized_emails = "vip@example.com"
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "v" * 40
+        settings.jwt_audience = "vip-aud"
+        settings.auth_required = True
+        settings.billing_required = False
+
+        with TestClient(app) as client:
+            reg = client.post(
+                "/api/auth/password/register",
+                json={"email": "vip@example.com", "password": "correcthorse123!"},
+            )
+            assert reg.status_code == 200
+            token = reg.json()["access_token"]
+            ok = client.get("/api/checks", headers={"Authorization": f"Bearer {token}"})
+            assert ok.status_code == 200
+    finally:
+        settings.require_authorized_account = orig_gate
+        settings.authorized_emails = orig_allow
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.jwt_audience = orig_aud
+        settings.auth_required = orig_auth_req
+        settings.billing_required = orig_billing
+
+
+def test_guest_scan_daily_limit_and_public_poll():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_guest = settings.guest_scans_enabled
+    try:
+        settings.guest_scans_enabled = True
+        gid = str(uuid.uuid4())
+        payload = {
+            "target_url": "https://example.com",
+            "scan_type": "mcp",
+            "depth": "quick",
+            "guest_client_id": gid,
+        }
+        with TestClient(app) as client:
+            first = client.post("/api/public/scans/guest", json=payload)
+            assert first.status_code == 200
+            body = first.json()
+            poll = body["poll_token"]
+            sid = body["scan_id"]
+            st = client.get(f"/api/public/scans/{sid}", params={"poll_token": poll})
+            assert st.status_code == 200
+            second = client.post("/api/public/scans/guest", json=payload)
+            assert second.status_code == 429
+    finally:
+        settings.guest_scans_enabled = orig_guest
+
+
+def test_password_auth_register_and_scan():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_auth = settings.auth_required
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_aud = settings.jwt_audience
+    orig_auth0d = settings.auth0_domain
+    orig_auth0a = settings.auth0_audience
+    orig_auth0i = settings.auth0_issuer
+    orig_billing = settings.billing_required
+    try:
+        settings.auth_required = True
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "t" * 40
+        settings.jwt_audience = "test-aud"
+        settings.auth0_domain = ""
+        settings.auth0_audience = ""
+        settings.auth0_issuer = ""
+        settings.billing_required = False
+
+        with TestClient(app) as client:
+            reg = client.post(
+                "/api/auth/password/register",
+                json={"email": "pwuser@example.com", "password": "correcthorse123!"},
+            )
+            assert reg.status_code == 200
+            token = reg.json()["access_token"]
+            scan = client.post(
+                "/api/scans",
+                headers={"Authorization": f"Bearer {token}"},
+                json=_base_payload(),
+            )
+            assert scan.status_code == 200
+    finally:
+        settings.auth_required = orig_auth
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.jwt_audience = orig_aud
+        settings.auth0_domain = orig_auth0d
+        settings.auth0_audience = orig_auth0a
+        settings.auth0_issuer = orig_auth0i
+        settings.billing_required = orig_billing
 
 
 def test_active_subscription_can_submit_scan():

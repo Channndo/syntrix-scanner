@@ -10,6 +10,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import settings
+from app.password_auth import decode_password_jwt, validate_password_auth_config
 
 
 _bearer = HTTPBearer(auto_error=False)
@@ -58,10 +59,33 @@ def _required_config_errors() -> list[str]:
 def validate_auth_config() -> None:
     if not settings.auth_required:
         return
+    validate_password_auth_config()
+    if getattr(settings, "password_auth_enabled", False):
+        # Password-only deployments may omit Auth0 entirely.
+        if (settings.auth0_domain or "").strip():
+            maybe_derive_auth0_issuer()
+            errors = _required_config_errors()
+            if errors:
+                raise RuntimeError("Invalid auth config: " + "; ".join(errors))
+        return
     maybe_derive_auth0_issuer()
     errors = _required_config_errors()
     if errors:
         raise RuntimeError("Invalid auth config: " + "; ".join(errors))
+
+
+def _try_password_jwt(token: str) -> Optional[Dict[str, Any]]:
+    if not getattr(settings, "password_auth_enabled", False):
+        return None
+    if not settings.jwt_secret or len(settings.jwt_secret) < 32:
+        return None
+    try:
+        header = jwt.get_unverified_header(token)
+        if header.get("alg") != "HS256":
+            return None
+        return decode_password_jwt(token)
+    except jwt.PyJWTError:
+        return None
 
 
 def _resolve_jwks_url() -> str:
@@ -143,6 +167,13 @@ def require_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing bearer token",
         )
+
+    claims = _try_password_jwt(creds.credentials)
+    if claims:
+        sub = claims.get("sub")
+        if not sub:
+            raise HTTPException(status_code=401, detail="Token missing subject")
+        return AuthenticatedUser(sub=sub, email=claims.get("email"), raw_claims=claims)
 
     claims = _verify_token(creds.credentials)
     sub = claims.get("sub")
