@@ -15,6 +15,7 @@ def _reset_db() -> None:
         store._conn.execute("DELETE FROM scans")
         store._conn.execute("DELETE FROM subscriptions")
         store._conn.execute("DELETE FROM users")
+        store._conn.execute("DELETE FROM waitlist_leads")
 
 
 def _base_payload() -> dict:
@@ -23,6 +24,61 @@ def _base_payload() -> dict:
         "scan_type": "mcp",
         "depth": "quick",
     }
+
+
+def test_public_waitlist_gone_when_secret_unset():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_auth_req = settings.auth_required
+    orig_blk = settings.billing_required
+    orig_secret = settings.waitlist_ingest_secret
+    settings.auth_required = False
+    settings.billing_required = False
+    settings.waitlist_ingest_secret = ""
+    try:
+        with TestClient(app) as client:
+            r = client.post(
+                "/api/public/waitlist",
+                headers={"authorization": "Bearer x"},
+                json={"email": "a@example.com"},
+            )
+            assert r.status_code == 404
+    finally:
+        settings.auth_required = orig_auth_req
+        settings.billing_required = orig_blk
+        settings.waitlist_ingest_secret = orig_secret
+
+
+def test_public_waitlist_requires_matching_bearer():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_auth_req = settings.auth_required
+    orig_blk = settings.billing_required
+    orig_secret = settings.waitlist_ingest_secret
+    settings.auth_required = False
+    settings.billing_required = False
+    settings.waitlist_ingest_secret = "test-wait-secret"
+    try:
+        with TestClient(app) as client:
+            r = client.post(
+                "/api/public/waitlist",
+                headers={"authorization": "Bearer wrong"},
+                json={"email": "lead@example.com", "name": "Pat"},
+            )
+            assert r.status_code == 401
+            ok = client.post(
+                "/api/public/waitlist",
+                headers={"authorization": "Bearer test-wait-secret"},
+                json={"email": "lead@example.com", "name": "Pat", "source": "signup_page"},
+            )
+            assert ok.status_code == 200
+            with store._lock, store._conn:
+                n = store._conn.execute("SELECT COUNT(*) FROM waitlist_leads WHERE email=?", ("lead@example.com",)).fetchone()[0]
+            assert n >= 1
+    finally:
+        settings.auth_required = orig_auth_req
+        settings.billing_required = orig_blk
+        settings.waitlist_ingest_secret = orig_secret
 
 
 def test_maybe_derive_auth0_issuer():

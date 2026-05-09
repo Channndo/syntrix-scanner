@@ -57,5 +57,8 @@ class Settings:
     stripe_price_team: str = os.getenv("STRIPE_PRICE_TEAM", "")
     app_base_url: str = os.getenv("APP_BASE_URL", "https://syntrix.solutions")
 
+    # Netlify signup-notify can POST early-access rows here using Authorization: Bearer <secret>
+    waitlist_ingest_secret: str = os.getenv("SYNTRIX_WAITLIST_INGEST_SECRET", "")
+
 
 settings = Settings()

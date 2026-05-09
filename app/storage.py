@@ -79,7 +79,37 @@ class _SQLiteStore:
                     findings_json TEXT NOT NULL DEFAULT '[]',
                     FOREIGN KEY (scan_id) REFERENCES scans(scan_id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS waitlist_leads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT NOT NULL,
+                    name TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    type TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS ix_waitlist_leads_email ON waitlist_leads(email);
+                CREATE INDEX IF NOT EXISTS ix_waitlist_leads_created ON waitlist_leads(created_at);
                 """
+            )
+
+    def append_waitlist(
+        self,
+        email: str,
+        *,
+        name: str = "",
+        source: str = "",
+        entry_type: str = "",
+        created_at: Optional[datetime] = None,
+    ) -> None:
+        ts = _to_iso(created_at or datetime.now(timezone.utc))
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO waitlist_leads (email, name, source, type, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (email, name, source, entry_type, ts),
             )
 
     def ensure_user(self, auth_sub: str, email: Optional[str] = None) -> None:

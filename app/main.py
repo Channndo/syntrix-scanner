@@ -76,6 +76,14 @@ class CheckoutSessionRequest(BaseModel):
     plan: Literal["pro", "team"] = "pro"
 
 
+class WaitlistIngestPayload(BaseModel):
+    email: str
+    name: str = ""
+    source: str = "signup_page"
+    type: str = "waitlist"
+    ts: Optional[str] = None
+
+
 # ========== ROUTES ==========
 
 @app.get("/")
@@ -91,6 +99,34 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok", "ts": datetime.now(timezone.utc).isoformat()}
+
+
+@app.post("/api/public/waitlist")
+async def ingest_waitlist_lead(request: Request, payload: WaitlistIngestPayload):
+    """
+    Accepts signup / early-access registrations from trusted callers (e.g. Netlify
+    signup-notify) via Authorization: Bearer <SYNTRIX_WAITLIST_INGEST_SECRET>.
+    Disabled until that secret is set on the scanner deployment.
+    """
+    secret = (settings.waitlist_ingest_secret or "").strip()
+    if not secret:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    auth = (request.headers.get("authorization") or "").strip()
+    if auth != f"Bearer {secret}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    email = payload.email.strip()[:320]
+    if len(email) < 3 or "@" not in email or "." not in email.split("@", 1)[-1]:
+        raise HTTPException(status_code=400, detail="invalid_email")
+
+    store.append_waitlist(
+        email=email,
+        name=(payload.name or "").strip()[:200],
+        source=(payload.source or "").strip()[:120],
+        entry_type=(payload.type or "").strip()[:80],
+    )
+    return {"ok": True}
 
 
 @app.get("/api/checks")
