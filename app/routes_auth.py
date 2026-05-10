@@ -101,7 +101,7 @@ async def password_login(request: Request, payload: PasswordLoginBody):
 
 @router.get("/me")
 def auth_me(user: AuthenticatedUser = Depends(require_user)):
-    """Current user profile (password or Auth0 JWT)."""
+    """Current user profile from password JWT."""
     sub = user.sub
     email = user.email or ""
     return {"id": _public_id(sub), "email": email}

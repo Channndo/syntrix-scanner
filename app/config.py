@@ -42,18 +42,11 @@ class Settings:
     # Data store
     sqlite_path: str = os.getenv("SYNTRIX_SQLITE_PATH", "syntrix.db")
 
-    # Auth flags/settings
+    # Auth flags/settings (password JWT / HS256 only — no third-party IdP).
     auth_required: bool = _to_bool(os.getenv("SYNTRIX_AUTH_REQUIRED"), True)
-    auth0_domain: str = os.getenv("AUTH0_DOMAIN", "")
-    auth0_audience: str = os.getenv("AUTH0_AUDIENCE", "")
-    auth0_issuer: str = os.getenv("AUTH0_ISSUER", "")
-    auth0_jwks_url: str = os.getenv("AUTH0_JWKS_URL", "")
-
-    # Email/password accounts (Argon2id + HS256 JWT). Set SYNTRIX_PASSWORD_AUTH=true on the API host (requires JWT secret).
+    # Email/password accounts (Argon2 + HS256 JWT). Set SYNTRIX_PASSWORD_AUTH=true on the API host.
     password_auth_enabled: bool = _to_bool(os.getenv("SYNTRIX_PASSWORD_AUTH"), False)
     jwt_secret: str = os.getenv("SYNTRIX_JWT_SECRET", "")
-    # Optional audience claim for Auth0 RS256 JWTs (not used for password HS256 tokens).
-    jwt_audience: str = os.getenv("SYNTRIX_JWT_AUDIENCE", "")
 
     # Stripe billing settings
     billing_required: bool = _to_bool(os.getenv("SYNTRIX_BILLING_REQUIRED"), True)

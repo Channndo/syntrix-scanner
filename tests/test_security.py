@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
-from app.deps import AuthenticatedUser, maybe_derive_auth0_issuer, require_user
+from app.deps import AuthenticatedUser, require_user
 from app.billing import require_active_subscription
 from app.config import settings
 from app.main import app
@@ -111,36 +111,27 @@ def test_waitlist_export_requires_secret():
         settings.waitlist_ingest_secret = orig_secret
 
 
-def test_maybe_derive_auth0_issuer():
-    orig_d = settings.auth0_domain
-    orig_i = settings.auth0_issuer
-    try:
-        settings.auth0_domain = "abc.us.auth0.com"
-        settings.auth0_issuer = ""
-        maybe_derive_auth0_issuer()
-        assert settings.auth0_issuer == "https://abc.us.auth0.com/"
-
-        settings.auth0_issuer = ""
-        settings.auth0_domain = "https://abc.us.auth0.com"
-        maybe_derive_auth0_issuer()
-        assert settings.auth0_issuer == "https://abc.us.auth0.com/"
-    finally:
-        settings.auth0_domain = orig_d
-        settings.auth0_issuer = orig_i
-
-
 def test_unauthenticated_scan_rejected():
     _reset_db()
     app.dependency_overrides = {}
+    orig_auth_req = settings.auth_required
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_billing = settings.billing_required
     settings.auth_required = True
+    settings.password_auth_enabled = True
+    settings.jwt_secret = "x" * 40
     settings.billing_required = False
-    settings.auth0_domain = "example.us.auth0.com"
-    settings.auth0_audience = "https://api.syntrix.test"
-    settings.auth0_issuer = "https://example.us.auth0.com/"
-
-    with TestClient(app) as client:
-        response = client.post("/api/scans", json=_base_payload())
-        assert response.status_code == 401
+    try:
+        with TestClient(app) as client:
+            response = client.post("/api/scans", json=_base_payload())
+            assert response.status_code == 401
+            assert response.json().get("detail") == "unauthorized"
+    finally:
+        settings.auth_required = orig_auth_req
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.billing_required = orig_billing
 
 
 def test_inactive_subscription_rejected():
@@ -190,14 +181,12 @@ def test_checks_blocked_when_account_not_authorized():
     orig_gate = settings.require_authorized_account
     orig_pw = settings.password_auth_enabled
     orig_jwt = settings.jwt_secret
-    orig_aud = settings.jwt_audience
     orig_auth_req = settings.auth_required
     orig_billing = settings.billing_required
     try:
         settings.require_authorized_account = True
         settings.password_auth_enabled = True
         settings.jwt_secret = "u" * 40
-        settings.jwt_audience = "gate-aud"
         settings.auth_required = True
         settings.billing_required = False
 
@@ -222,7 +211,6 @@ def test_checks_blocked_when_account_not_authorized():
         settings.require_authorized_account = orig_gate
         settings.password_auth_enabled = orig_pw
         settings.jwt_secret = orig_jwt
-        settings.jwt_audience = orig_aud
         settings.auth_required = orig_auth_req
         settings.billing_required = orig_billing
 
@@ -234,7 +222,6 @@ def test_allowlist_authorizes_immediately():
     orig_allow = settings.authorized_emails
     orig_pw = settings.password_auth_enabled
     orig_jwt = settings.jwt_secret
-    orig_aud = settings.jwt_audience
     orig_auth_req = settings.auth_required
     orig_billing = settings.billing_required
     try:
@@ -242,7 +229,6 @@ def test_allowlist_authorizes_immediately():
         settings.authorized_emails = "vip@example.com"
         settings.password_auth_enabled = True
         settings.jwt_secret = "v" * 40
-        settings.jwt_audience = "vip-aud"
         settings.auth_required = True
         settings.billing_required = False
 
@@ -260,7 +246,6 @@ def test_allowlist_authorizes_immediately():
         settings.authorized_emails = orig_allow
         settings.password_auth_enabled = orig_pw
         settings.jwt_secret = orig_jwt
-        settings.jwt_audience = orig_aud
         settings.auth_required = orig_auth_req
         settings.billing_required = orig_billing
 
@@ -298,19 +283,11 @@ def test_password_auth_register_and_scan():
     orig_auth = settings.auth_required
     orig_pw = settings.password_auth_enabled
     orig_jwt = settings.jwt_secret
-    orig_aud = settings.jwt_audience
-    orig_auth0d = settings.auth0_domain
-    orig_auth0a = settings.auth0_audience
-    orig_auth0i = settings.auth0_issuer
     orig_billing = settings.billing_required
     try:
         settings.auth_required = True
         settings.password_auth_enabled = True
         settings.jwt_secret = "t" * 40
-        settings.jwt_audience = "test-aud"
-        settings.auth0_domain = ""
-        settings.auth0_audience = ""
-        settings.auth0_issuer = ""
         settings.billing_required = False
 
         with TestClient(app) as client:
@@ -330,10 +307,6 @@ def test_password_auth_register_and_scan():
         settings.auth_required = orig_auth
         settings.password_auth_enabled = orig_pw
         settings.jwt_secret = orig_jwt
-        settings.jwt_audience = orig_aud
-        settings.auth0_domain = orig_auth0d
-        settings.auth0_audience = orig_auth0a
-        settings.auth0_issuer = orig_auth0i
         settings.billing_required = orig_billing
 
 
