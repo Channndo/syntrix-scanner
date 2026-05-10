@@ -44,8 +44,8 @@ class Settings:
 
     # Auth flags/settings (password JWT / HS256 only — no third-party IdP).
     auth_required: bool = _to_bool(os.getenv("SYNTRIX_AUTH_REQUIRED"), True)
-    # Email/password accounts (Argon2 + HS256 JWT). Set SYNTRIX_PASSWORD_AUTH=true on the API host.
-    password_auth_enabled: bool = _to_bool(os.getenv("SYNTRIX_PASSWORD_AUTH"), False)
+    # Email/password accounts (Argon2 + HS256 JWT). Defaults ON; set SYNTRIX_PASSWORD_AUTH=false to disable.
+    password_auth_enabled: bool = _to_bool(os.getenv("SYNTRIX_PASSWORD_AUTH"), True)
     jwt_secret: str = os.getenv("SYNTRIX_JWT_SECRET", "")
 
     # Stripe billing settings
