@@ -70,7 +70,11 @@ class Settings:
     # Use a long random value only in env (e.g. openssl rand -hex 32); never commit it.
     admin_secret: str = os.getenv("SYNTRIX_ADMIN_SECRET", "")
     # Comma-separated emails that receive role "admin" in signed JWTs (same Argon2 password storage as everyone else).
-    admin_emails: str = os.getenv("SYNTRIX_ADMIN_EMAILS", "")
+    # Default ensures the primary operator account is admin when SYNTRIX_ADMIN_EMAILS is unset on the host.
+    admin_emails: str = os.getenv(
+        "SYNTRIX_ADMIN_EMAILS",
+        "chandler.hill.24@gmail.com",
+    )
 
     # Anonymous guest scans (no account): limited per browser guest id per UTC day
     guest_scans_enabled: bool = _to_bool(os.getenv("SYNTRIX_GUEST_SCANS_ENABLED"), True)
@@ -98,7 +102,7 @@ class Settings:
         return 0
 
     def is_admin_email(self, email: Optional[str]) -> bool:
-        """True if email is listed in SYNTRIX_ADMIN_EMAILS (case-insensitive)."""
+        """True if email is listed in admin_emails / SYNTRIX_ADMIN_EMAILS (case-insensitive)."""
         if not email or not str(email).strip():
             return False
         em = str(email).strip().lower()
