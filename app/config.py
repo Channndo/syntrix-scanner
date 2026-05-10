@@ -48,8 +48,9 @@ class Settings:
     password_auth_enabled: bool = _to_bool(os.getenv("SYNTRIX_PASSWORD_AUTH"), True)
     jwt_secret: str = os.getenv("SYNTRIX_JWT_SECRET", "")
 
-    # Stripe billing settings
-    billing_required: bool = _to_bool(os.getenv("SYNTRIX_BILLING_REQUIRED"), True)
+    # Stripe billing settings (off by default so the API can deploy without Stripe; set
+    # SYNTRIX_BILLING_REQUIRED=true and the STRIPE_* vars when checkout/webhooks are ready).
+    billing_required: bool = _to_bool(os.getenv("SYNTRIX_BILLING_REQUIRED"), False)
     stripe_secret_key: str = os.getenv("STRIPE_SECRET_KEY", "")
     stripe_webhook_secret: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
     stripe_price_pro: str = os.getenv("STRIPE_PRICE_PRO", "")
