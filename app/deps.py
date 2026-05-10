@@ -74,3 +74,20 @@ def require_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
     return AuthenticatedUser(sub=sub, email=claims.get("email"), raw_claims=claims)
+
+
+def optional_user(
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+) -> Optional[AuthenticatedUser]:
+    """Valid Bearer JWT → user; missing or invalid token → None (anonymous)."""
+    if not creds or not creds.credentials:
+        return None
+    if not settings.password_auth_enabled:
+        return None
+    claims = _decode_password_bearer(creds.credentials)
+    if not claims:
+        return None
+    sub = claims.get("sub")
+    if not sub:
+        return None
+    return AuthenticatedUser(sub=sub, email=claims.get("email"), raw_claims=claims)

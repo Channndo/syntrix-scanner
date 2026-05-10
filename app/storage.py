@@ -118,6 +118,65 @@ class _SQLiteStore:
         self._ensure_password_history_table()
         self._ensure_guest_scan_columns()
         self._ensure_guest_daily_table()
+        self._ensure_mira_user_memory_table()
+
+    def _ensure_mira_user_memory_table(self) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS mira_user_memory (
+                    auth_sub TEXT PRIMARY KEY,
+                    memory_text TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (auth_sub) REFERENCES users(auth_sub) ON DELETE CASCADE
+                )
+                """
+            )
+
+    def get_mira_user_memory(self, auth_sub: str) -> str:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT memory_text FROM mira_user_memory WHERE auth_sub = ?",
+                (auth_sub,),
+            ).fetchone()
+        if not row:
+            return ""
+        return str(row["memory_text"] or "")
+
+    def append_mira_user_memory(
+        self,
+        auth_sub: str,
+        user_text: str,
+        assistant_text: str,
+        *,
+        max_chars: int = 12000,
+    ) -> None:
+        """Rolling transcript for signed-in users; trimmed from the start when over max_chars."""
+        u = (user_text or "").strip()[:2000]
+        a = (assistant_text or "").strip()[:4000]
+        chunk = f"User: {u}\nAssistant: {a}\n\n"
+        now = _to_iso(datetime.now(timezone.utc))
+        with self._lock, self._conn:
+            prev = ""
+            row = self._conn.execute(
+                "SELECT memory_text FROM mira_user_memory WHERE auth_sub = ?",
+                (auth_sub,),
+            ).fetchone()
+            if row:
+                prev = str(row["memory_text"] or "")
+            merged = (prev + chunk).strip()
+            if len(merged) > max_chars:
+                merged = merged[-max_chars:]
+            self._conn.execute(
+                """
+                INSERT INTO mira_user_memory (auth_sub, memory_text, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(auth_sub) DO UPDATE SET
+                    memory_text = excluded.memory_text,
+                    updated_at = excluded.updated_at
+                """,
+                (auth_sub, merged, now),
+            )
 
     def _ensure_guest_scan_columns(self) -> None:
         with self._lock, self._conn:

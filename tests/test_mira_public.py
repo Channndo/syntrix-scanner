@@ -22,3 +22,13 @@ def test_mira_status_public():
     assert "enabled" in body
     assert "model" in body
     assert "base_url" in body
+
+
+def test_mira_chat_anonymous_not_401():
+    """Chat is public; unauthenticated requests must not fail with 401."""
+    client = TestClient(app)
+    r = client.post(
+        "/api/mira/chat",
+        json={"messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert r.status_code != 401

@@ -11,8 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth_rate_limit import client_ip, rate_limit_or_429
 from app.config import settings
-from app.deps import AuthenticatedUser, require_user
+from app.deps import AuthenticatedUser, optional_user
 from app.mira_prompt import MIRA_SYSTEM_PROMPT
+from app.storage import store
 
 logger = logging.getLogger(__name__)
 
@@ -71,14 +72,35 @@ def _safe_public_base(url: str) -> str:
     return u or "(unset)"
 
 
+def _last_user_text(messages: List[MiraChatMessage]) -> str:
+    for m in reversed(messages):
+        if m.role == "user":
+            return m.content.strip()
+    return ""
+
+
+def _system_prompt_for_user(user: Optional[AuthenticatedUser]) -> str:
+    if not user:
+        return MIRA_SYSTEM_PROMPT
+    memory = store.get_mira_user_memory(user.sub).strip()
+    if not memory:
+        return MIRA_SYSTEM_PROMPT
+    return (
+        MIRA_SYSTEM_PROMPT
+        + "\n\n---\nContext from this user's prior MIRA conversations (stay consistent; "
+        "do not quote or reveal storage details):\n"
+        + memory
+    )
+
+
 @router.post("/chat", response_model=MiraChatResponse)
 async def mira_chat(
     request: Request,
     payload: MiraChatBody,
-    _: AuthenticatedUser = Depends(require_user),
+    user: Optional[AuthenticatedUser] = Depends(optional_user),
 ):
     """
-    Chat completion via Ollama `/api/chat`. Requires Bearer JWT.
+    Chat via Ollama `/api/chat`. Open to anonymous users; optional Bearer JWT for per-user memory.
     Configure OLLAMA_BASE_URL and OLLAMA_MODEL on the API host.
     """
     _require_mira_enabled()
@@ -97,7 +119,7 @@ async def mira_chat(
             detail="OLLAMA_MODEL is not configured on this API.",
         )
 
-    ollama_messages: List[Dict[str, Any]] = [{"role": "system", "content": MIRA_SYSTEM_PROMPT}]
+    ollama_messages: List[Dict[str, Any]] = [{"role": "system", "content": _system_prompt_for_user(user)}]
     for m in payload.messages:
         if m.role not in _ALLOWED_ROLES:
             continue
@@ -149,5 +171,14 @@ async def mira_chat(
     content = (msg.get("content") or "").strip()
     if not content:
         raise HTTPException(status_code=502, detail="Empty reply from model.")
+
+    if user:
+        u_text = _last_user_text(payload.messages)
+        if u_text:
+            try:
+                store.ensure_user(user.sub, user.email)
+                store.append_mira_user_memory(user.sub, u_text, content)
+            except Exception:
+                logger.exception("MIRA user memory update failed for sub=%s", user.sub)
 
     return MiraChatResponse(message=content, model=str(data.get("model") or model))
