@@ -10,6 +10,26 @@ def _to_bool(raw: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _float_env(name: str, default: float) -> float:
+    try:
+        raw = os.getenv(name)
+        if raw is None or not str(raw).strip():
+            return default
+        return float(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _optional_int_env(name: str) -> Optional[int]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 class Settings:
     """Environment-driven config. Override via env vars in deployment."""
 
@@ -87,9 +107,18 @@ class Settings:
     guest_scans_per_utc_day: int = int(os.getenv("SYNTRIX_GUEST_SCANS_PER_UTC_DAY", "1"))
 
     # MIRA in-app assistant (Ollama LLM proxy — browser never talks to Ollama directly).
+    # Production: set OLLAMA_BASE_URL to an address the API process can reach (not 127.0.0.1 unless Ollama is
+    # on the same machine). Example: http://100.x.x.x:11434 (Tailscale), https://ollama.internal/api,
+    # or a private hostname in the same VPC. Pull the model on that host: `ollama pull llama3:8b`.
     mira_enabled: bool = _to_bool(os.getenv("SYNTRIX_MIRA_ENABLED"), True)
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/")
-    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2").strip()
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3:8b").strip()
+    ollama_temperature: float = _float_env("OLLAMA_TEMPERATURE", 0.4)
+    # Optional bearer for Ollama behind nginx/reverse proxy auth (not used by stock Ollama).
+    ollama_api_key: str = os.getenv("OLLAMA_API_KEY", "").strip()
+    # Optional generation limits (passed to Ollama options when set).
+    ollama_num_ctx: Optional[int] = _optional_int_env("OLLAMA_NUM_CTX")
+    ollama_num_predict: Optional[int] = _optional_int_env("OLLAMA_NUM_PREDICT")
 
     def initial_authorized_as_int(self, email: Optional[str]) -> int:
         """1 = may use product (when authorization gate is on); 0 = JWT ok but API gated."""

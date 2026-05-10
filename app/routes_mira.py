@@ -126,16 +126,25 @@ async def mira_chat(
         ollama_messages.append({"role": m.role, "content": m.content})
 
     url = f"{base}/api/chat"
+    options: Dict[str, Any] = {"temperature": float(settings.ollama_temperature)}
+    if settings.ollama_num_ctx is not None:
+        options["num_ctx"] = settings.ollama_num_ctx
+    if settings.ollama_num_predict is not None:
+        options["num_predict"] = settings.ollama_num_predict
     body = {
         "model": model,
         "messages": ollama_messages,
         "stream": False,
-        "options": {"temperature": 0.4},
+        "options": options,
     }
+
+    ollama_headers: Dict[str, str] = {}
+    if settings.ollama_api_key:
+        ollama_headers["Authorization"] = f"Bearer {settings.ollama_api_key}"
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
-            r = await client.post(url, json=body)
+            r = await client.post(url, json=body, headers=ollama_headers)
     except httpx.ConnectError as exc:
         logger.warning("MIRA Ollama connect failed: %s", exc)
         raise HTTPException(
