@@ -1,9 +1,10 @@
 import base64
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
+from app.auth_rate_limit import _RATE_HITS, _RATE_LOCK
 from app.deps import AuthenticatedUser, require_user
 from app.billing import require_active_subscription
 from app.config import settings
@@ -16,10 +17,13 @@ def _reset_db() -> None:
         store._conn.execute("DELETE FROM findings")
         store._conn.execute("DELETE FROM scans")
         store._conn.execute("DELETE FROM subscriptions")
+        store._conn.execute("DELETE FROM password_history")
         store._conn.execute("DELETE FROM password_accounts")
         store._conn.execute("DELETE FROM guest_daily_scans")
         store._conn.execute("DELETE FROM users")
         store._conn.execute("DELETE FROM waitlist_leads")
+    with _RATE_LOCK:
+        _RATE_HITS.clear()
 
 
 def _base_payload() -> dict:
@@ -28,6 +32,20 @@ def _base_payload() -> dict:
         "scan_type": "mcp",
         "depth": "quick",
     }
+
+
+def _register_json(email: str, password: str = "correcthorse123!", **kwargs) -> dict:
+    """POST body for /api/auth/password/register — matches landing security defaults."""
+    body = {
+        "email": email,
+        "password": password,
+        "security_q1_id": 0,
+        "security_q2_id": 1,
+        "security_answer1": "springfield",
+        "security_answer2": "lincoln",
+    }
+    body.update(kwargs)
+    return body
 
 
 def test_public_waitlist_gone_when_secret_unset():
@@ -194,7 +212,7 @@ def test_checks_blocked_when_account_not_authorized():
         with TestClient(app) as client:
             reg = client.post(
                 "/api/auth/password/register",
-                json={"email": "pending@example.com", "password": "correcthorse123!"},
+                json=_register_json("pending@example.com"),
             )
             assert reg.status_code == 200
             token = reg.json()["access_token"]
@@ -236,7 +254,7 @@ def test_allowlist_authorizes_immediately():
         with TestClient(app) as client:
             reg = client.post(
                 "/api/auth/password/register",
-                json={"email": "vip@example.com", "password": "correcthorse123!"},
+                json=_register_json("vip@example.com"),
             )
             assert reg.status_code == 200
             token = reg.json()["access_token"]
@@ -294,7 +312,7 @@ def test_password_auth_register_and_scan():
         with TestClient(app) as client:
             reg = client.post(
                 "/api/auth/password/register",
-                json={"email": "pwuser@example.com", "password": "correcthorse123!"},
+                json=_register_json("pwuser@example.com"),
             )
             assert reg.status_code == 200
             token = reg.json()["access_token"]
@@ -352,12 +370,12 @@ def test_duplicate_registration_returns_409():
         with TestClient(app) as client:
             first = client.post(
                 "/api/auth/password/register",
-                json={"email": "dup@example.com", "password": "correcthorse123!"},
+                json=_register_json("dup@example.com"),
             )
             assert first.status_code == 200
             second = client.post(
                 "/api/auth/password/register",
-                json={"email": "dup@example.com", "password": "differenthorse456!"},
+                json=_register_json("dup@example.com", password="differenthorse456!"),
             )
             assert second.status_code == 409
             assert "already" in str(second.json().get("detail", "")).lower()
@@ -382,7 +400,7 @@ def test_admin_email_role_in_me():
         with TestClient(app) as client:
             reg = client.post(
                 "/api/auth/password/register",
-                json={"email": "boss@example.com", "password": "correcthorse123!"},
+                json=_register_json("boss@example.com"),
             )
             assert reg.status_code == 200
             token = reg.json()["access_token"]
@@ -391,7 +409,7 @@ def test_admin_email_role_in_me():
             assert me.json().get("role") == "admin"
             reg2 = client.post(
                 "/api/auth/password/register",
-                json={"email": "plain@example.com", "password": "correcthorse123!"},
+                json=_register_json("plain@example.com"),
             )
             assert reg2.status_code == 200
             token2 = reg2.json()["access_token"]
@@ -421,12 +439,11 @@ def test_profile_names_register_patch_and_png_avatar():
         with TestClient(app) as client:
             reg = client.post(
                 "/api/auth/password/register",
-                json={
-                    "email": "avatar@example.com",
-                    "password": "correcthorse123!",
-                    "first_name": "Ada",
-                    "last_name": "Lovelace",
-                },
+                json=_register_json(
+                    "avatar@example.com",
+                    first_name="Ada",
+                    last_name="Lovelace",
+                ),
             )
             assert reg.status_code == 200
             token = reg.json()["access_token"]
@@ -473,3 +490,453 @@ def test_profile_names_register_patch_and_png_avatar():
         settings.password_auth_enabled = orig_pw
         settings.jwt_secret = orig_jwt
         settings.auth_required = orig_auth_req
+
+
+def test_password_login_two_step_security_questions():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    try:
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "q" * 40
+        settings.auth_required = True
+        with TestClient(app) as client:
+            reg = client.post(
+                "/api/auth/password/register",
+                json=_register_json("twostep@example.com"),
+            )
+            assert reg.status_code == 200
+
+            step1 = client.post(
+                "/api/auth/password/login",
+                json={"email": "twostep@example.com", "password": "correcthorse123!"},
+            )
+            assert step1.status_code == 200
+            body = step1.json()
+            assert body.get("requires_security_questions") is True
+            assert body.get("challenge_token")
+            assert len(body.get("questions") or []) == 2
+
+            bad = client.post(
+                "/api/auth/password/login/security",
+                json={
+                    "challenge_token": body["challenge_token"],
+                    "answer1": "wrong",
+                    "answer2": "wrong",
+                },
+            )
+            assert bad.status_code == 401
+
+            ok = client.post(
+                "/api/auth/password/login/security",
+                json={
+                    "challenge_token": body["challenge_token"],
+                    "answer1": "springfield",
+                    "answer2": "lincoln",
+                },
+            )
+            assert ok.status_code == 200
+            assert ok.json().get("access_token")
+
+            me = client.get(
+                "/api/auth/me",
+                headers={"Authorization": f"Bearer {ok.json()['access_token']}"},
+            )
+            assert me.status_code == 200
+            assert me.json().get("subscription")
+    finally:
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req
+
+
+def test_login_legacy_account_without_security_questions_gets_token_in_one_step():
+    """Accounts with NULL security hashes (pre-migration) skip the second step."""
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    try:
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "l" * 40
+        settings.auth_required = True
+        with TestClient(app) as client:
+            client.post(
+                "/api/auth/password/register",
+                json=_register_json("legacy@example.com"),
+            )
+            with store._lock, store._conn:
+                store._conn.execute(
+                    """
+                    UPDATE password_accounts
+                    SET security_q1_id = NULL, security_q2_id = NULL,
+                        security_a1_hash = NULL, security_a2_hash = NULL
+                    WHERE email = ?
+                    """,
+                    ("legacy@example.com",),
+                )
+            login = client.post(
+                "/api/auth/password/login",
+                json={"email": "legacy@example.com", "password": "correcthorse123!"},
+            )
+            assert login.status_code == 200
+            assert login.json().get("access_token")
+            assert not login.json().get("requires_security_questions")
+    finally:
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req
+
+
+def test_trusted_device_token_skips_security_questions_on_next_login():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    try:
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "t" * 40
+        settings.auth_required = True
+        with TestClient(app) as client:
+            client.post(
+                "/api/auth/password/register",
+                json=_register_json("trustdev@example.com"),
+            )
+            step1 = client.post(
+                "/api/auth/password/login",
+                json={"email": "trustdev@example.com", "password": "correcthorse123!"},
+            )
+            body = step1.json()
+            assert body.get("requires_security_questions") is True
+            complete = client.post(
+                "/api/auth/password/login/security",
+                json={
+                    "challenge_token": body["challenge_token"],
+                    "answer1": "springfield",
+                    "answer2": "lincoln",
+                    "trust_device": True,
+                },
+            )
+            assert complete.status_code == 200
+            dt = complete.json().get("device_trust_token")
+            assert dt
+
+            step2 = client.post(
+                "/api/auth/password/login",
+                json={
+                    "email": "trustdev@example.com",
+                    "password": "correcthorse123!",
+                    "device_trust_token": dt,
+                },
+            )
+            assert step2.status_code == 200
+            j2 = step2.json()
+            assert j2.get("access_token")
+            assert j2.get("requires_security_questions") is not True
+            assert j2.get("trusted_device") is True
+
+            bad = client.post(
+                "/api/auth/password/login",
+                json={
+                    "email": "trustdev@example.com",
+                    "password": "wrongpassword!",
+                    "device_trust_token": dt,
+                },
+            )
+            assert bad.status_code == 401
+    finally:
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req
+
+
+def test_password_rotation_expired_returns_change_session():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    try:
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "r" * 40
+        settings.auth_required = True
+        with TestClient(app) as client:
+            client.post(
+                "/api/auth/password/register",
+                json=_register_json("rotate@example.com"),
+            )
+            # No security questions: rotation is enforced on password step (not after SQ).
+            with store._lock, store._conn:
+                store._conn.execute(
+                    """
+                    UPDATE password_accounts
+                    SET security_q1_id = NULL, security_q2_id = NULL,
+                        security_a1_hash = NULL, security_a2_hash = NULL
+                    WHERE email = ?
+                    """,
+                    ("rotate@example.com",),
+                )
+            old_ts = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()
+            with store._lock, store._conn:
+                store._conn.execute(
+                    "UPDATE password_accounts SET password_changed_at = ? WHERE email = ?",
+                    (old_ts, "rotate@example.com"),
+                )
+            login = client.post(
+                "/api/auth/password/login",
+                json={"email": "rotate@example.com", "password": "correcthorse123!"},
+            )
+            assert login.status_code == 200
+            body = login.json()
+            assert body.get("password_change_required") is True
+            assert body.get("reason") == "rotation_expired"
+            assert body.get("change_session_token")
+            assert not body.get("access_token")
+    finally:
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req
+
+
+def test_expired_rotation_with_security_questions_prompts_sq_before_password_change():
+    """New browsers must pass SQ before rotation / forced password change can apply."""
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    try:
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "v" * 40
+        settings.auth_required = True
+        with TestClient(app) as client:
+            client.post(
+                "/api/auth/password/register",
+                json=_register_json("sqfirst@example.com"),
+            )
+            old_ts = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()
+            with store._lock, store._conn:
+                store._conn.execute(
+                    "UPDATE password_accounts SET password_changed_at = ? WHERE email = ?",
+                    (old_ts, "sqfirst@example.com"),
+                )
+            login = client.post(
+                "/api/auth/password/login",
+                json={"email": "sqfirst@example.com", "password": "correcthorse123!"},
+            )
+            assert login.status_code == 200
+            body = login.json()
+            assert body.get("requires_security_questions") is True
+            assert body.get("challenge_token")
+            assert body.get("password_change_required") is not True
+            sec = client.post(
+                "/api/auth/password/login/security",
+                json={
+                    "challenge_token": body["challenge_token"],
+                    "answer1": "springfield",
+                    "answer2": "lincoln",
+                },
+            )
+            assert sec.status_code == 200
+            out = sec.json()
+            assert out.get("password_change_required") is True
+            assert out.get("reason") == "rotation_expired"
+            assert out.get("change_session_token")
+    finally:
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req
+
+
+def test_password_change_flow_and_history_rejects_old_password():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    try:
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "h" * 40
+        settings.auth_required = True
+        with TestClient(app) as client:
+            client.post(
+                "/api/auth/password/register",
+                json=_register_json("hist@example.com"),
+            )
+            with store._lock, store._conn:
+                store._conn.execute(
+                    """
+                    UPDATE password_accounts
+                    SET security_q1_id = NULL, security_q2_id = NULL,
+                        security_a1_hash = NULL, security_a2_hash = NULL
+                    WHERE email = ?
+                    """,
+                    ("hist@example.com",),
+                )
+            old_ts = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()
+            with store._lock, store._conn:
+                store._conn.execute(
+                    "UPDATE password_accounts SET password_changed_at = ? WHERE email = ?",
+                    (old_ts, "hist@example.com"),
+                )
+            login = client.post(
+                "/api/auth/password/login",
+                json={"email": "hist@example.com", "password": "correcthorse123!"},
+            )
+            cs = login.json()["change_session_token"]
+            chg = client.post(
+                "/api/auth/password/change",
+                json={
+                    "current_password": "correcthorse123!",
+                    "new_password": "firstRotation789!xx",
+                    "change_session_token": cs,
+                },
+            )
+            assert chg.status_code == 200
+            tok = chg.json()["access_token"]
+
+            bad_reuse = client.post(
+                "/api/auth/password/change",
+                headers={"Authorization": f"Bearer {tok}"},
+                json={
+                    "current_password": "firstRotation789!xx",
+                    "new_password": "correcthorse123!",
+                },
+            )
+            assert bad_reuse.status_code == 400
+            assert bad_reuse.json().get("detail") == "password_reused"
+    finally:
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req
+
+
+def test_password_rotation_exempt_skips_change_prompt():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    try:
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "e" * 40
+        settings.auth_required = True
+        with TestClient(app) as client:
+            client.post(
+                "/api/auth/password/register",
+                json=_register_json("exempt@example.com"),
+            )
+            old_ts = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()
+            with store._lock, store._conn:
+                store._conn.execute(
+                    """
+                    UPDATE password_accounts
+                    SET password_changed_at = ?, password_rotation_exempt = 1
+                    WHERE email = ?
+                    """,
+                    (old_ts, "exempt@example.com"),
+                )
+            login = client.post(
+                "/api/auth/password/login",
+                json={"email": "exempt@example.com", "password": "correcthorse123!"},
+            )
+            assert login.status_code == 200
+            assert login.json().get("password_change_required") is not True
+            assert login.json().get("requires_security_questions") is True
+    finally:
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req
+
+
+def test_admin_force_password_change_overrides_exempt():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    orig_admin = settings.admin_secret
+    try:
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "f" * 40
+        settings.auth_required = True
+        settings.admin_secret = "integration-admin-secret-test-value"
+        with TestClient(app) as client:
+            client.post(
+                "/api/auth/password/register",
+                json=_register_json("forced@example.com"),
+            )
+            with store._lock, store._conn:
+                store._conn.execute(
+                    """
+                    UPDATE password_accounts
+                    SET password_rotation_exempt = 1, force_password_change = 1
+                    WHERE email = ?
+                    """,
+                    ("forced@example.com",),
+                )
+            login = client.post(
+                "/api/auth/password/login",
+                json={"email": "forced@example.com", "password": "correcthorse123!"},
+            )
+            assert login.status_code == 200
+            first = login.json()
+            assert first.get("requires_security_questions") is True
+            assert first.get("challenge_token")
+            sec = client.post(
+                "/api/auth/password/login/security",
+                json={
+                    "challenge_token": first["challenge_token"],
+                    "answer1": "springfield",
+                    "answer2": "lincoln",
+                },
+            )
+            assert sec.status_code == 200
+            assert sec.json().get("password_change_required") is True
+            assert sec.json().get("reason") == "admin_required"
+    finally:
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req
+        settings.admin_secret = orig_admin
+
+
+def test_admin_set_password_policy_endpoint():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    orig_admin = settings.admin_secret
+    try:
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "a" * 40
+        settings.auth_required = True
+        settings.admin_secret = "policy-admin-secret-test-value"
+        with TestClient(app) as client:
+            client.post(
+                "/api/auth/password/register",
+                json=_register_json("policy@example.com"),
+            )
+            r = client.post(
+                "/api/admin/set-password-policy",
+                headers={"Authorization": "Bearer policy-admin-secret-test-value"},
+                json={"email": "policy@example.com", "password_rotation_exempt": True},
+            )
+            assert r.status_code == 200
+            assert r.json().get("ok") is True
+            with store._lock, store._conn:
+                row = store._conn.execute(
+                    "SELECT password_rotation_exempt FROM password_accounts WHERE email = ?",
+                    ("policy@example.com",),
+                ).fetchone()
+            assert int(row[0]) == 1
+    finally:
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req
+        settings.admin_secret = orig_admin

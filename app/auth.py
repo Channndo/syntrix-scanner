@@ -15,9 +15,9 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from jose import jwt
+from jose import JWTError, jwt
 from passlib.context import CryptContext
 
 from app.config import settings
@@ -49,6 +49,11 @@ def ensure_jwt_secret() -> str:
         "process. Set SYNTRIX_JWT_SECRET in production."
     )
     return generated
+
+
+def normalize_security_answer(plain: str) -> str:
+    """Normalize recovery answers: trim, lowercase for stable verification."""
+    return normalize_password_input(plain).strip().lower()
 
 
 def normalize_password_input(plain: str) -> str:
@@ -99,3 +104,81 @@ def mint_access_token(user_sub: str, email: str) -> str:
 def decode_access_token(token: str) -> Dict[str, Any]:
     secret = ensure_jwt_secret()
     return jwt.decode(token, secret, algorithms=["HS256"])
+
+
+def mint_login_challenge_token(user_sub: str, email: str) -> str:
+    """Short-lived JWT after password OK; used only to complete security-question step."""
+    secret = ensure_jwt_secret()
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(minutes=10)
+    payload: Dict[str, Any] = {
+        "sub": user_sub,
+        "email": email.strip().lower(),
+        "typ": "login_sq",
+        "iat": int(now.timestamp()),
+        "exp": int(exp.timestamp()),
+    }
+    return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def decode_login_challenge_token(token: str) -> Dict[str, Any]:
+    secret = ensure_jwt_secret()
+    payload = jwt.decode(token, secret, algorithms=["HS256"])
+    if payload.get("typ") != "login_sq":
+        raise ValueError("invalid challenge token")
+    return payload
+
+
+def mint_password_change_session_token(user_sub: str, email: str) -> str:
+    """Short-lived JWT after password verified but rotation / admin force blocks full login."""
+    secret = ensure_jwt_secret()
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(minutes=15)
+    payload: Dict[str, Any] = {
+        "sub": user_sub,
+        "email": email.strip().lower(),
+        "typ": "pw_change",
+        "iat": int(now.timestamp()),
+        "exp": int(exp.timestamp()),
+    }
+    return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def decode_password_change_session_token(token: str) -> Dict[str, Any]:
+    secret = ensure_jwt_secret()
+    payload = jwt.decode(token, secret, algorithms=["HS256"])
+    if payload.get("typ") != "pw_change":
+        raise ValueError("invalid password-change session token")
+    return payload
+
+
+def mint_device_trust_token(user_sub: str, email: str) -> str:
+    """Long-lived JWT for “trusted device” — skip security questions on future password logins."""
+    secret = ensure_jwt_secret()
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(days=90)
+    payload: Dict[str, Any] = {
+        "sub": user_sub,
+        "email": email.strip().lower(),
+        "typ": "device_trust",
+        "iat": int(now.timestamp()),
+        "exp": int(exp.timestamp()),
+    }
+    return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def device_trust_token_valid(token: Optional[str], user_sub: str, email: str) -> bool:
+    if not token or not str(token).strip():
+        return False
+    try:
+        secret = ensure_jwt_secret()
+        payload = jwt.decode(str(token).strip(), secret, algorithms=["HS256"])
+        if payload.get("typ") != "device_trust":
+            return False
+        if payload.get("sub") != user_sub:
+            return False
+        if (payload.get("email") or "").strip().lower() != email.strip().lower():
+            return False
+        return True
+    except JWTError:
+        return False

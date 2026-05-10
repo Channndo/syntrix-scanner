@@ -113,6 +113,9 @@ class _SQLiteStore:
         self._ensure_users_authorized_column()
         self._ensure_user_name_columns()
         self._ensure_user_avatar_column()
+        self._ensure_password_security_columns()
+        self._ensure_password_policy_columns()
+        self._ensure_password_history_table()
         self._ensure_guest_scan_columns()
         self._ensure_guest_daily_table()
 
@@ -158,6 +161,78 @@ class _SQLiteStore:
             }
             if "avatar_png" not in cols:
                 self._conn.execute("ALTER TABLE users ADD COLUMN avatar_png BLOB")
+
+    def _ensure_password_security_columns(self) -> None:
+        with self._lock, self._conn:
+            cols = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(password_accounts)").fetchall()
+            }
+            if "security_q1_id" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE password_accounts ADD COLUMN security_q1_id INTEGER"
+                )
+            if "security_q2_id" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE password_accounts ADD COLUMN security_q2_id INTEGER"
+                )
+            if "security_a1_hash" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE password_accounts ADD COLUMN security_a1_hash TEXT"
+                )
+            if "security_a2_hash" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE password_accounts ADD COLUMN security_a2_hash TEXT"
+                )
+
+    def _ensure_password_policy_columns(self) -> None:
+        """90-day rotation, admin exempt / force-change flags; backfill password_changed_at."""
+        with self._lock, self._conn:
+            cols = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(password_accounts)").fetchall()
+            }
+            if "password_changed_at" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE password_accounts ADD COLUMN password_changed_at TEXT"
+                )
+            if "password_rotation_exempt" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE password_accounts ADD COLUMN password_rotation_exempt "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            if "force_password_change" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE password_accounts ADD COLUMN force_password_change "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            self._conn.execute(
+                """
+                UPDATE password_accounts
+                SET password_changed_at = created_at
+                WHERE password_changed_at IS NULL OR trim(password_changed_at) = ''
+                """
+            )
+
+    def _ensure_password_history_table(self) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS password_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_sub TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (user_sub) REFERENCES users(auth_sub) ON DELETE CASCADE
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS ix_password_history_user_sub
+                ON password_history(user_sub)
+                """
+            )
 
     def _ensure_users_authorized_column(self) -> None:
         """Add users.authorized for account approval / allowlisting."""
@@ -518,17 +593,25 @@ class _SQLiteStore:
             ).fetchone()
         return row["auth_sub"] if row else None
 
-    def get_password_account_by_email(self, email: str) -> Optional[Dict[str, str]]:
-        """Return user_sub and Argon2 hash for normalized email, if registered."""
+    def get_password_account_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """Return password row for normalized email, if registered."""
         norm = email.strip().lower()
         with self._lock:
             row = self._conn.execute(
-                "SELECT user_sub, password_hash FROM password_accounts WHERE email = ?",
+                "SELECT * FROM password_accounts WHERE email = ?",
                 (norm,),
             ).fetchone()
         if not row:
             return None
-        return {"user_sub": row["user_sub"], "password_hash": row["password_hash"]}
+        return dict(row)
+
+    def get_password_account_by_sub(self, user_sub: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM password_accounts WHERE user_sub = ?",
+                (user_sub,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def get_user(self, auth_sub: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -584,16 +667,114 @@ class _SQLiteStore:
                 (auth_sub,),
             )
 
-    def register_password_account(self, user_sub: str, email: str, password_hash: str) -> None:
+    def register_password_account(
+        self,
+        user_sub: str,
+        email: str,
+        password_hash: str,
+        *,
+        security_q1_id: Optional[int] = None,
+        security_q2_id: Optional[int] = None,
+        security_a1_hash: Optional[str] = None,
+        security_a2_hash: Optional[str] = None,
+    ) -> None:
         now = _to_iso(datetime.now(timezone.utc))
         em = email.strip().lower()
         with self._lock, self._conn:
             self._conn.execute(
                 """
-                INSERT INTO password_accounts (user_sub, email, password_hash, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO password_accounts (
+                    user_sub, email, password_hash, created_at, password_changed_at,
+                    security_q1_id, security_q2_id, security_a1_hash, security_a2_hash
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (user_sub, em, password_hash, now),
+                (
+                    user_sub,
+                    em,
+                    password_hash,
+                    now,
+                    now,
+                    security_q1_id,
+                    security_q2_id,
+                    security_a1_hash,
+                    security_a2_hash,
+                ),
+            )
+
+    def list_password_history_hashes(self, user_sub: str, limit: int = 24) -> List[str]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT password_hash FROM password_history
+                WHERE user_sub = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (user_sub, limit),
+            ).fetchall()
+        return [str(r["password_hash"]) for r in rows]
+
+    def replace_password_with_history(
+        self,
+        user_sub: str,
+        previous_password_hash: str,
+        new_password_hash: str,
+    ) -> None:
+        """Archive previous hash, set new password + rotation timestamp, trim history."""
+        now = _to_iso(datetime.now(timezone.utc))
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO password_history (user_sub, password_hash, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (user_sub, previous_password_hash, now),
+            )
+            self._conn.execute(
+                """
+                UPDATE password_accounts
+                SET password_hash = ?,
+                    password_changed_at = ?,
+                    force_password_change = 0
+                WHERE user_sub = ?
+                """,
+                (new_password_hash, now, user_sub),
+            )
+            rows = self._conn.execute(
+                """
+                SELECT id FROM password_history
+                WHERE user_sub = ?
+                ORDER BY created_at DESC
+                """,
+                (user_sub,),
+            ).fetchall()
+            ids = [int(r["id"]) for r in rows]
+            for rid in ids[24:]:
+                self._conn.execute("DELETE FROM password_history WHERE id = ?", (rid,))
+
+    def set_password_policy_flags(
+        self,
+        user_sub: str,
+        *,
+        rotation_exempt: Optional[bool] = None,
+        force_change: Optional[bool] = None,
+    ) -> None:
+        sets: List[str] = []
+        args: List[Any] = []
+        if rotation_exempt is not None:
+            sets.append("password_rotation_exempt = ?")
+            args.append(1 if rotation_exempt else 0)
+        if force_change is not None:
+            sets.append("force_password_change = ?")
+            args.append(1 if force_change else 0)
+        if not sets:
+            return
+        args.append(user_sub)
+        with self._lock, self._conn:
+            self._conn.execute(
+                f"UPDATE password_accounts SET {', '.join(sets)} WHERE user_sub = ?",
+                tuple(args),
             )
 
 
@@ -616,6 +797,10 @@ class UserStore:
         *,
         first_name: str = "",
         last_name: str = "",
+        security_q1_id: Optional[int] = None,
+        security_q2_id: Optional[int] = None,
+        security_a1_hash: Optional[str] = None,
+        security_a2_hash: Optional[str] = None,
     ) -> Dict[str, Any]:
         norm = email.strip().lower()
         if self._db.get_password_account_by_email(norm):
@@ -628,7 +813,15 @@ class UserStore:
             last_name=last_name or None,
         )
         try:
-            self._db.register_password_account(user_sub, norm, password_hash)
+            self._db.register_password_account(
+                user_sub,
+                norm,
+                password_hash,
+                security_q1_id=security_q1_id,
+                security_q2_id=security_q2_id,
+                security_a1_hash=security_a1_hash,
+                security_a2_hash=security_a2_hash,
+            )
         except sqlite3.IntegrityError as exc:
             raise ValueError("duplicate_email") from exc
         return {"id": self.public_id(user_sub), "email": norm, "user_sub": user_sub}
@@ -640,12 +833,25 @@ class UserStore:
         sub = row["user_sub"]
         u = self._db.get_user(sub)
         em = (u.get("email") if u else None) or email.strip().lower()
-        return {
+        out = {
             "id": self.public_id(sub),
             "email": em,
             "user_sub": sub,
             "password_hash": row["password_hash"],
         }
+        for key in (
+            "security_q1_id",
+            "security_q2_id",
+            "security_a1_hash",
+            "security_a2_hash",
+            "password_changed_at",
+            "password_rotation_exempt",
+            "force_password_change",
+            "created_at",
+        ):
+            if key in row:
+                out[key] = row[key]
+        return out
 
     def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
         sub = f"local:{user_id}"

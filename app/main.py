@@ -31,6 +31,7 @@ from app.storage import store
 from app.config import settings
 from app.routes_auth import router as auth_router
 from app.routes_guest import router as guest_router
+from app.routes_mira import router as mira_router
 from app.schemas_scan import ScanSubmit, ScanSubmitResponse, ScanStatusResponse
 from app.scan_runner import run_scan_background
 
@@ -44,12 +45,25 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH"],
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
     allow_headers=["*"],
 )
 
 app.include_router(auth_router, prefix="/api/auth")
 app.include_router(guest_router)
+app.include_router(mira_router, prefix="/api/mira")
+
+
+@app.get("/api/mira", tags=["mira"])
+def mira_service_index():
+    """Public index so deployments can verify the MIRA subtree is mounted (use GET /api/mira/status)."""
+    return {
+        "service": "mira",
+        "paths": {
+            "status": "/api/mira/status",
+            "chat": "/api/mira/chat",
+        },
+    }
 
 
 # ========== MODELS ==========
@@ -62,6 +76,15 @@ class SetAccountAuthorizedPayload(BaseModel):
     authorized: bool = True
     email: Optional[str] = Field(None, max_length=320)
     auth_sub: Optional[str] = Field(None, max_length=256)
+
+
+class SetPasswordPolicyPayload(BaseModel):
+    """Admin-only: exempt from 90-day rotation and/or force reset on next login."""
+
+    email: Optional[str] = Field(None, max_length=320)
+    auth_sub: Optional[str] = Field(None, max_length=256)
+    password_rotation_exempt: Optional[bool] = None
+    force_password_change: Optional[bool] = None
 
 
 class WaitlistIngestPayload(BaseModel):
@@ -107,6 +130,36 @@ def admin_set_account_authorized(request: Request, payload: SetAccountAuthorized
         raise HTTPException(status_code=404, detail="User not found.")
     store.set_account_authorized(sub, payload.authorized)
     return {"ok": True, "auth_sub": sub, "authorized": payload.authorized}
+
+
+@app.post("/api/admin/set-password-policy")
+def admin_set_password_policy(request: Request, payload: SetPasswordPolicyPayload):
+    """
+    Set rotation exempt / force-password-change for a password account.
+    Authorization: Bearer SYNTRIX_ADMIN_SECRET
+    """
+    require_admin_bearer(request)
+    if payload.password_rotation_exempt is None and payload.force_password_change is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide password_rotation_exempt and/or force_password_change",
+        )
+    sub = (payload.auth_sub or "").strip()
+    if not sub and payload.email:
+        sub = store.get_auth_sub_by_email(payload.email.strip()) or ""
+    if not sub:
+        raise HTTPException(status_code=404, detail="User not found.")
+    store.set_password_policy_flags(
+        sub,
+        rotation_exempt=payload.password_rotation_exempt,
+        force_change=payload.force_password_change,
+    )
+    return {
+        "ok": True,
+        "auth_sub": sub,
+        "password_rotation_exempt": payload.password_rotation_exempt,
+        "force_password_change": payload.force_password_change,
+    }
 
 
 @app.post("/api/public/waitlist")

@@ -53,20 +53,36 @@ def require_active_subscription(
 
 
 def create_checkout_session(user: AuthenticatedUser, price_id: str) -> Dict[str, str]:
+    if not (settings.stripe_secret_key or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Stripe is not configured on this API (set STRIPE_SECRET_KEY).",
+        )
     stripe.api_key = settings.stripe_secret_key
-    session = stripe.checkout.Session.create(
-        mode="subscription",
-        line_items=[{"price": price_id, "quantity": 1}],
-        success_url=f"{settings.app_base_url}/account.html?checkout=success",
-        cancel_url=f"{settings.app_base_url}/billing.html?checkout=cancelled",
-        customer_email=user.email,
-        client_reference_id=user.sub,
-        metadata={"auth_sub": user.sub},
-    )
+    try:
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            line_items=[{"price": price_id, "quantity": 1}],
+            success_url=f"{settings.app_base_url}/account.html?checkout=success",
+            cancel_url=f"{settings.app_base_url}/billing.html?checkout=cancelled",
+            customer_email=user.email,
+            client_reference_id=user.sub,
+            metadata={"auth_sub": user.sub},
+        )
+    except stripe.StripeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=getattr(exc, "user_message", None) or str(exc) or "Stripe checkout could not be started.",
+        ) from exc
     return {"checkout_url": session.url, "session_id": session.id}
 
 
 def create_billing_portal_session(user: AuthenticatedUser) -> Dict[str, str]:
+    if not (settings.stripe_secret_key or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Stripe is not configured on this API (set STRIPE_SECRET_KEY).",
+        )
     stripe.api_key = settings.stripe_secret_key
     current = store.get_subscription(user.sub)
     customer_id = current.get("stripe_customer_id")
@@ -76,10 +92,16 @@ def create_billing_portal_session(user: AuthenticatedUser) -> Dict[str, str]:
             detail="No billing customer found for this account.",
         )
 
-    session = stripe.billing_portal.Session.create(
-        customer=customer_id,
-        return_url=f"{settings.app_base_url}/account.html",
-    )
+    try:
+        session = stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=f"{settings.app_base_url}/account.html",
+        )
+    except stripe.StripeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=getattr(exc, "user_message", None) or str(exc) or "Stripe billing portal could not be opened.",
+        ) from exc
     return {"portal_url": session.url}
 
 

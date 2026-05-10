@@ -13,10 +13,16 @@ def _to_bool(raw: str, default: bool = False) -> bool:
 class Settings:
     """Environment-driven config. Override via env vars in deployment."""
 
-    allowed_origins: List[str] = os.getenv(
-        "SYNTRIX_ALLOWED_ORIGINS",
-        "http://localhost:3000,http://localhost:5173,https://syntrix.solutions",
-    ).split(",")
+    allowed_origins: List[str] = [
+        x.strip()
+        for x in os.getenv(
+            "SYNTRIX_ALLOWED_ORIGINS",
+            "http://localhost:3000,http://localhost:5173,"
+            "http://localhost:8888,http://127.0.0.1:8888,"
+            "https://syntrix.solutions",
+        ).split(",")
+        if x.strip()
+    ]
 
     # Scan execution caps
     max_scan_seconds: int = int(os.getenv("SYNTRIX_MAX_SCAN_SECONDS", "600"))
@@ -79,6 +85,11 @@ class Settings:
     # Anonymous guest scans (no account): limited per browser guest id per UTC day
     guest_scans_enabled: bool = _to_bool(os.getenv("SYNTRIX_GUEST_SCANS_ENABLED"), True)
     guest_scans_per_utc_day: int = int(os.getenv("SYNTRIX_GUEST_SCANS_PER_UTC_DAY", "1"))
+
+    # MIRA in-app assistant (Ollama LLM proxy — browser never talks to Ollama directly).
+    mira_enabled: bool = _to_bool(os.getenv("SYNTRIX_MIRA_ENABLED"), True)
+    ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/")
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2").strip()
 
     def initial_authorized_as_int(self, email: Optional[str]) -> int:
         """1 = may use product (when authorization gate is on); 0 = JWT ok but API gated."""
