@@ -1,3 +1,4 @@
+import base64
 import uuid
 from datetime import datetime, timezone
 
@@ -401,3 +402,74 @@ def test_admin_email_role_in_me():
         settings.jwt_secret = orig_jwt
         settings.auth_required = orig_auth_req
         settings.admin_emails = orig_admin
+
+
+def test_profile_names_register_patch_and_png_avatar():
+    """Register carries names; PATCH updates; PNG upload, GET bytes, clear_avatar."""
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    try:
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "p" * 40
+        settings.auth_required = True
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )
+        with TestClient(app) as client:
+            reg = client.post(
+                "/api/auth/password/register",
+                json={
+                    "email": "avatar@example.com",
+                    "password": "correcthorse123!",
+                    "first_name": "Ada",
+                    "last_name": "Lovelace",
+                },
+            )
+            assert reg.status_code == 200
+            token = reg.json()["access_token"]
+            me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+            assert me.status_code == 200
+            mj = me.json()
+            assert mj["first_name"] == "Ada"
+            assert mj["last_name"] == "Lovelace"
+            assert mj["has_avatar"] is False
+            assert mj["created_at"]
+
+            patch = client.patch(
+                "/api/auth/profile",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"first_name": "Grace"},
+            )
+            assert patch.status_code == 200
+            assert patch.json()["first_name"] == "Grace"
+            assert patch.json()["last_name"] == "Lovelace"
+
+            up = client.post(
+                "/api/auth/me/avatar",
+                headers={"Authorization": f"Bearer {token}"},
+                files={"file": ("a.png", png, "image/png")},
+            )
+            assert up.status_code == 200
+            assert up.json().get("has_avatar") is True
+
+            av = client.get("/api/auth/me/avatar", headers={"Authorization": f"Bearer {token}"})
+            assert av.status_code == 200
+            assert av.headers["content-type"] == "image/png"
+            assert av.content.startswith(b"\x89PNG")
+
+            cleared = client.patch(
+                "/api/auth/profile",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"clear_avatar": True},
+            )
+            assert cleared.status_code == 200
+            assert cleared.json().get("has_avatar") is False
+            missing = client.get("/api/auth/me/avatar", headers={"Authorization": f"Bearer {token}"})
+            assert missing.status_code == 404
+    finally:
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req

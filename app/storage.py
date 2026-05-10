@@ -112,6 +112,7 @@ class _SQLiteStore:
         self._ensure_waitlist_extra_columns()
         self._ensure_users_authorized_column()
         self._ensure_user_name_columns()
+        self._ensure_user_avatar_column()
         self._ensure_guest_scan_columns()
         self._ensure_guest_daily_table()
 
@@ -149,6 +150,14 @@ class _SQLiteStore:
                 self._conn.execute(
                     "ALTER TABLE users ADD COLUMN last_name TEXT NOT NULL DEFAULT ''"
                 )
+
+    def _ensure_user_avatar_column(self) -> None:
+        with self._lock, self._conn:
+            cols = {
+                row[1] for row in self._conn.execute("PRAGMA table_info(users)").fetchall()
+            }
+            if "avatar_png" not in cols:
+                self._conn.execute("ALTER TABLE users ADD COLUMN avatar_png BLOB")
 
     def _ensure_users_authorized_column(self) -> None:
         """Add users.authorized for account approval / allowlisting."""
@@ -552,6 +561,29 @@ class _SQLiteStore:
                 (v, auth_sub),
             )
 
+    def update_user_names(self, auth_sub: str, first_name: str, last_name: str) -> None:
+        fn = (first_name or "").strip()[:100]
+        ln = (last_name or "").strip()[:100]
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE users SET first_name = ?, last_name = ? WHERE auth_sub = ?",
+                (fn, ln, auth_sub),
+            )
+
+    def set_user_avatar_png(self, auth_sub: str, png_bytes: bytes) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE users SET avatar_png = ? WHERE auth_sub = ?",
+                (png_bytes, auth_sub),
+            )
+
+    def clear_user_avatar(self, auth_sub: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE users SET avatar_png = NULL WHERE auth_sub = ?",
+                (auth_sub,),
+            )
+
     def register_password_account(self, user_sub: str, email: str, password_hash: str) -> None:
         now = _to_iso(datetime.now(timezone.utc))
         em = email.strip().lower()
@@ -577,12 +609,24 @@ class UserStore:
             return user_sub[6:]
         return user_sub
 
-    def create_user(self, email: str, password_hash: str) -> Dict[str, Any]:
+    def create_user(
+        self,
+        email: str,
+        password_hash: str,
+        *,
+        first_name: str = "",
+        last_name: str = "",
+    ) -> Dict[str, Any]:
         norm = email.strip().lower()
         if self._db.get_password_account_by_email(norm):
             raise ValueError("duplicate_email")
         user_sub = f"local:{uuid.uuid4()}"
-        self._db.ensure_user(user_sub, norm)
+        self._db.ensure_user(
+            user_sub,
+            norm,
+            first_name=first_name or None,
+            last_name=last_name or None,
+        )
         try:
             self._db.register_password_account(user_sub, norm, password_hash)
         except sqlite3.IntegrityError as exc:
