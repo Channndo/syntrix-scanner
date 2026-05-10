@@ -51,12 +51,29 @@ def ensure_jwt_secret() -> str:
     return generated
 
 
+def normalize_password_input(plain: str) -> str:
+    """
+    Remove invisible paste junk (BOM, zero-width) and accidental outer CRLF only.
+    Interior spaces are kept so we don't change intentional passwords.
+    """
+    if plain is None:
+        return ""
+    s = (
+        str(plain)
+        .replace("\ufeff", "")
+        .replace("\u200b", "")
+        .replace("\u200c", "")
+        .replace("\u200d", "")
+    )
+    return s.strip("\r\n")
+
+
 def hash_password(plain: str) -> str:
-    return pwd_context.hash(plain)
+    return pwd_context.hash(normalize_password_input(plain))
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    return pwd_context.verify(normalize_password_input(plain), hashed)
 
 
 def password_needs_rehash(hashed: str) -> bool:
