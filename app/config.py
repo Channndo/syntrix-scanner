@@ -65,7 +65,11 @@ class Settings:
     # User agent for outbound probes
     probe_user_agent: str = "Syntrix-Scanner/0.1 (+https://syntrix.solutions/scanner)"
 
-    # Data store
+    # Data store — all accounts, scans, MIRA memory live here (single SQLite file).
+    # Render/Fly/other PaaS: the container filesystem is usually ephemeral unless you attach a persistent disk.
+    # Fix "users disappear after deploy": add a Render Disk (or volume), mount e.g. /data, then set:
+    #   SYNTRIX_SQLITE_PATH=/data/syntrix.db
+    # Keep SYNTRIX_JWT_SECRET stable across deploys or existing JWTs stop verifying (users remain in DB if path persists).
     sqlite_path: str = os.getenv("SYNTRIX_SQLITE_PATH", "syntrix.db")
 
     # Auth flags/settings (password JWT / HS256 only — no third-party IdP).
