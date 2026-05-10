@@ -336,3 +336,68 @@ def test_active_subscription_can_submit_scan():
         response = client.post("/api/scans", json=_base_payload())
         assert response.status_code == 200
         assert response.json()["status"] == "queued"
+
+
+def test_duplicate_registration_returns_409():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    try:
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "d" * 40
+        settings.auth_required = True
+        with TestClient(app) as client:
+            first = client.post(
+                "/api/auth/password/register",
+                json={"email": "dup@example.com", "password": "correcthorse123!"},
+            )
+            assert first.status_code == 200
+            second = client.post(
+                "/api/auth/password/register",
+                json={"email": "dup@example.com", "password": "differenthorse456!"},
+            )
+            assert second.status_code == 409
+            assert "already" in str(second.json().get("detail", "")).lower()
+    finally:
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req
+
+
+def test_admin_email_role_in_me():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    orig_admin = settings.admin_emails
+    try:
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "a" * 40
+        settings.auth_required = True
+        settings.admin_emails = "boss@example.com"
+        with TestClient(app) as client:
+            reg = client.post(
+                "/api/auth/password/register",
+                json={"email": "boss@example.com", "password": "correcthorse123!"},
+            )
+            assert reg.status_code == 200
+            token = reg.json()["access_token"]
+            me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+            assert me.status_code == 200
+            assert me.json().get("role") == "admin"
+            reg2 = client.post(
+                "/api/auth/password/register",
+                json={"email": "plain@example.com", "password": "correcthorse123!"},
+            )
+            assert reg2.status_code == 200
+            token2 = reg2.json()["access_token"]
+            me2 = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token2}"})
+            assert me2.json().get("role") == "user"
+    finally:
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req
+        settings.admin_emails = orig_admin

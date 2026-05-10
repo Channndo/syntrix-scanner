@@ -67,7 +67,10 @@ class Settings:
     # Comma-separated domain suffixes e.g. "@syntrix.solutions,corp.io" (with or without leading @).
     authorized_email_domains: str = os.getenv("SYNTRIX_AUTHORIZED_EMAIL_DOMAINS", "")
     # POST /api/admin/set-account-authorized — Authorization: Bearer <secret>
+    # Use a long random value only in env (e.g. openssl rand -hex 32); never commit it.
     admin_secret: str = os.getenv("SYNTRIX_ADMIN_SECRET", "")
+    # Comma-separated emails that receive role "admin" in signed JWTs (same Argon2 password storage as everyone else).
+    admin_emails: str = os.getenv("SYNTRIX_ADMIN_EMAILS", "")
 
     # Anonymous guest scans (no account): limited per browser guest id per UTC day
     guest_scans_enabled: bool = _to_bool(os.getenv("SYNTRIX_GUEST_SCANS_ENABLED"), True)
@@ -93,6 +96,17 @@ class Settings:
             if em.endswith(sfx):
                 return 1
         return 0
+
+    def is_admin_email(self, email: Optional[str]) -> bool:
+        """True if email is listed in SYNTRIX_ADMIN_EMAILS (case-insensitive)."""
+        if not email or not str(email).strip():
+            return False
+        em = str(email).strip().lower()
+        for part in self.admin_emails.split(","):
+            e = part.strip().lower()
+            if e and em == e:
+                return True
+        return False
 
 
 settings = Settings()

@@ -109,10 +109,14 @@ async def password_login(request: Request, payload: PasswordLoginBody):
 
 @router.get("/me")
 def auth_me(user: AuthenticatedUser = Depends(require_user)):
-    """Current user profile from password JWT."""
+    """Current user profile from password JWT (includes signed role for admin emails)."""
     sub = user.sub
     email = user.email or ""
-    return {"id": _public_id(sub), "email": email}
+    claims = user.raw_claims or {}
+    role = claims.get("role")
+    if role not in ("admin", "user"):
+        role = "admin" if settings.is_admin_email(email) else "user"
+    return {"id": _public_id(sub), "email": email, "role": role}
 
 
 # Terminal verification after deploy (requires SYNTRIX_PASSWORD_AUTH=true on the API):
