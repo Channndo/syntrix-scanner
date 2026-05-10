@@ -9,6 +9,7 @@ import io
 import json
 import secrets
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Dict, List, Optional
@@ -536,6 +537,13 @@ class _SQLiteStore:
             ).fetchone()
         return str(row["auth_sub"]) if row else None
 
+    def update_password_hash(self, user_sub: str, password_hash: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE password_accounts SET password_hash = ? WHERE user_sub = ?",
+                (password_hash, user_sub),
+            )
+
     def set_account_authorized(self, auth_sub: str, authorized: bool) -> None:
         v = 1 if authorized else 0
         with self._lock, self._conn:
@@ -555,6 +563,58 @@ class _SQLiteStore:
                 """,
                 (user_sub, em, password_hash, now),
             )
+
+
+class UserStore:
+    """Email/password users — threading.Lock matches sqlite store pattern."""
+
+    def __init__(self, inner: "_SQLiteStore"):
+        self._db = inner
+
+    @staticmethod
+    def public_id(user_sub: str) -> str:
+        if user_sub.startswith("local:"):
+            return user_sub[6:]
+        return user_sub
+
+    def create_user(self, email: str, password_hash: str) -> Dict[str, Any]:
+        norm = email.strip().lower()
+        if self._db.get_password_account_by_email(norm):
+            raise ValueError("duplicate_email")
+        user_sub = f"local:{uuid.uuid4()}"
+        self._db.ensure_user(user_sub, norm)
+        try:
+            self._db.register_password_account(user_sub, norm, password_hash)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("duplicate_email") from exc
+        return {"id": self.public_id(user_sub), "email": norm, "user_sub": user_sub}
+
+    def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        row = self._db.get_password_account_by_email(email.strip().lower())
+        if not row:
+            return None
+        sub = row["user_sub"]
+        u = self._db.get_user(sub)
+        em = (u.get("email") if u else None) or email.strip().lower()
+        return {
+            "id": self.public_id(sub),
+            "email": em,
+            "user_sub": sub,
+            "password_hash": row["password_hash"],
+        }
+
+    def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        sub = f"local:{user_id}"
+        u = self._db.get_user(sub)
+        if not u:
+            return None
+        return {"id": user_id, "email": u.get("email"), "user_sub": sub}
+
+    def update_password_hash(self, user_sub: str, password_hash: str) -> None:
+        self._db.update_password_hash(user_sub, password_hash)
+
+    def ensure_identity(self, user_sub: str, email: str) -> None:
+        self._db.ensure_user(user_sub, email.strip().lower())
 
 
 store = _SQLiteStore()

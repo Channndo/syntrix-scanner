@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
-from app.auth import AuthenticatedUser, maybe_derive_auth0_issuer, require_user
+from app.deps import AuthenticatedUser, maybe_derive_auth0_issuer, require_user
 from app.billing import require_active_subscription
 from app.config import settings
 from app.main import app
@@ -215,7 +215,9 @@ def test_checks_blocked_when_account_not_authorized():
             assert blocked.status_code == 403
             me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
             assert me.status_code == 200
-            assert me.json().get("authorized") is False
+            mj = me.json()
+            assert mj.get("email") == "pending@example.com"
+            assert mj.get("id")
     finally:
         settings.require_authorized_account = orig_gate
         settings.password_auth_enabled = orig_pw

@@ -52,7 +52,7 @@ class Settings:
     # Email/password accounts (Argon2id + HS256 JWT). Set SYNTRIX_PASSWORD_AUTH=true on the API host (requires JWT secret).
     password_auth_enabled: bool = _to_bool(os.getenv("SYNTRIX_PASSWORD_AUTH"), False)
     jwt_secret: str = os.getenv("SYNTRIX_JWT_SECRET", "")
-    # Defaults to AUTH0_AUDIENCE / SYNTRIX_JWT_AUDIENCE / syntrix-api — see password_auth.effective_jwt_audience()
+    # Optional audience claim for Auth0 RS256 JWTs (not used for password HS256 tokens).
     jwt_audience: str = os.getenv("SYNTRIX_JWT_AUDIENCE", "")
 
     # Stripe billing settings

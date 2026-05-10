@@ -6,7 +6,7 @@ import secrets
 
 from fastapi import Depends, HTTPException, Request, status
 
-from app.auth import AuthenticatedUser, require_user
+from app.deps import AuthenticatedUser, require_user
 from app.config import settings
 from app.storage import store
 

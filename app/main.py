@@ -18,7 +18,8 @@ import uuid
 
 from app.scanner.engine import ScanEngine, ScanRequest, ScanResult
 from app.scanner.checks import REGISTERED_CHECKS
-from app.auth import AuthenticatedUser, require_user, validate_auth_config
+from app.auth import ensure_jwt_secret
+from app.deps import AuthenticatedUser, require_user, validate_auth_config
 from app.authorization import require_admin_bearer, require_authorized_account
 from app.billing import (
     create_billing_portal_session,
@@ -29,12 +30,7 @@ from app.billing import (
 )
 from app.storage import store
 from app.config import settings
-from app.password_auth import (
-    client_ip,
-    login_email_password,
-    rate_limit_or_429,
-    register_email_password,
-)
+from app.routes_auth import router as auth_router
 
 app = FastAPI(
     title="Syntrix Scanner API",
@@ -49,6 +45,8 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+app.include_router(auth_router, prefix="/api/auth")
 
 
 # ========== MODELS ==========
@@ -83,18 +81,6 @@ class ScanStatusResponse(BaseModel):
 
 class CheckoutSessionRequest(BaseModel):
     plan: Literal["pro", "team"] = "pro"
-
-
-class PasswordRegister(BaseModel):
-    email: str = Field(..., max_length=320)
-    password: str = Field(..., max_length=256)
-    first_name: Optional[str] = Field(None, max_length=100)
-    last_name: Optional[str] = Field(None, max_length=100)
-
-
-class PasswordLogin(BaseModel):
-    email: str = Field(..., max_length=320)
-    password: str = Field(..., max_length=256)
 
 
 class SetAccountAuthorizedPayload(BaseModel):
@@ -142,32 +128,6 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok", "ts": datetime.now(timezone.utc).isoformat()}
-
-
-def _require_password_auth_enabled() -> None:
-    if not settings.password_auth_enabled:
-        raise HTTPException(status_code=404, detail="Password authentication is not enabled.")
-
-
-@app.post("/api/auth/password/register")
-async def auth_password_register(request: Request, payload: PasswordRegister):
-    """Create an email/password account (Argon2id). Returns a bearer JWT for API calls."""
-    _require_password_auth_enabled()
-    rate_limit_or_429(client_ip(request))
-    return register_email_password(
-        payload.email,
-        payload.password,
-        (payload.first_name or "").strip(),
-        (payload.last_name or "").strip(),
-    )
-
-
-@app.post("/api/auth/password/login")
-async def auth_password_login(request: Request, payload: PasswordLogin):
-    """Exchange email + password for a bearer JWT."""
-    _require_password_auth_enabled()
-    rate_limit_or_429(client_ip(request))
-    return login_email_password(payload.email, payload.password)
 
 
 @app.post("/api/public/scans/guest", response_model=GuestScanResponse)
@@ -251,22 +211,6 @@ def public_get_findings(scan_id: str, poll_token: str):
         "scan_id": scan_id,
         "findings": store.get_findings(scan_id),
         "summary": store.get_summary(scan_id),
-    }
-
-
-@app.get("/api/auth/me")
-def auth_me(user: AuthenticatedUser = Depends(require_user)):
-    """Return identity + authorization status (JWT may be valid while account is still pending approval)."""
-    row = store.get_user(user.sub)
-    auth_flag = bool(row and int(row.get("authorized", 0)) == 1)
-    email_out = user.email
-    if row and row.get("email"):
-        email_out = row.get("email") or email_out
-    return {
-        "sub": user.sub,
-        "email": email_out,
-        "authorized": auth_flag,
-        "authorization_required": settings.require_authorized_account,
     }
 
 
@@ -474,6 +418,8 @@ async def billing_webhook(request: Request):
 
 @app.on_event("startup")
 def _validate_startup_config():
+    if settings.password_auth_enabled:
+        ensure_jwt_secret()
     validate_auth_config()
     validate_billing_config()
 

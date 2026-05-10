@@ -8,7 +8,7 @@ from typing import Any, Dict
 import stripe
 from fastapi import Depends, Header, HTTPException, Request, status
 
-from app.auth import AuthenticatedUser, require_user
+from app.deps import AuthenticatedUser, require_user
 from app.authorization import require_authorized_account
 from app.config import settings
 from app.storage import store
