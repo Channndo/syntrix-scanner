@@ -18,7 +18,7 @@ from __future__ import annotations
 import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.auth import (
     hash_password,
@@ -36,6 +36,8 @@ user_store = UserStore(store)
 
 
 class PasswordRegisterBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=256)
 
@@ -47,7 +49,13 @@ class PasswordLoginBody(BaseModel):
 
 def _require_password_auth_enabled() -> None:
     if not settings.password_auth_enabled:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "password authentication is disabled on this API; "
+                "set SYNTRIX_PASSWORD_AUTH=true (and redeploy if needed)"
+            ),
+        )
 
 
 def _public_id(sub: str) -> str:
