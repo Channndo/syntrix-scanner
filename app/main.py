@@ -10,13 +10,12 @@ Run locally:
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, HttpUrl, Field
+from pydantic import BaseModel, Field
 from typing import Optional, Literal
 from datetime import datetime, timezone
-import secrets
 import uuid
 
-from app.scanner.engine import ScanEngine, ScanRequest, ScanResult
+from app.scanner.engine import ScanRequest
 from app.scanner.checks import REGISTERED_CHECKS
 from app.auth import ensure_jwt_secret
 from app.deps import AuthenticatedUser, require_user, validate_auth_config
@@ -31,6 +30,9 @@ from app.billing import (
 from app.storage import store
 from app.config import settings
 from app.routes_auth import router as auth_router
+from app.routes_guest import router as guest_router
+from app.schemas_scan import ScanSubmit, ScanSubmitResponse, ScanStatusResponse
+from app.scan_runner import run_scan_background
 
 app = FastAPI(
     title="Syntrix Scanner API",
@@ -47,37 +49,10 @@ app.add_middleware(
 )
 
 app.include_router(auth_router, prefix="/api/auth")
+app.include_router(guest_router)
 
 
 # ========== MODELS ==========
-
-class ScanSubmit(BaseModel):
-    target_url: HttpUrl = Field(..., description="MCP server URL or agent endpoint")
-    scan_type: Literal["mcp", "agent_endpoint", "tunnel"] = "mcp"
-    depth: Literal["quick", "standard", "deep"] = "standard"
-    auth_header: Optional[str] = Field(None, description="Optional auth header for authenticated scans")
-    notify_email: Optional[str] = None
-
-
-class ScanSubmitResponse(BaseModel):
-    scan_id: str
-    status: str
-    target: str
-    submitted_at: datetime
-    estimated_seconds: int
-
-
-class ScanStatusResponse(BaseModel):
-    scan_id: str
-    status: Literal["queued", "running", "complete", "failed"]
-    target: str
-    progress: int
-    findings_count: int
-    risk_score: Optional[int] = None
-    risk_tier: Optional[str] = None
-    submitted_at: datetime
-    completed_at: Optional[datetime] = None
-
 
 class CheckoutSessionRequest(BaseModel):
     plan: Literal["pro", "team"] = "pro"
@@ -87,19 +62,6 @@ class SetAccountAuthorizedPayload(BaseModel):
     authorized: bool = True
     email: Optional[str] = Field(None, max_length=320)
     auth_sub: Optional[str] = Field(None, max_length=256)
-
-
-class GuestScanSubmit(ScanSubmit):
-    guest_client_id: str = Field(..., max_length=64, description="Stable UUID from browser storage")
-
-
-class GuestScanResponse(BaseModel):
-    scan_id: str
-    status: str
-    target: str
-    submitted_at: datetime
-    estimated_seconds: int
-    poll_token: str
 
 
 class WaitlistIngestPayload(BaseModel):
@@ -122,96 +84,13 @@ def root():
         "version": "0.1.0",
         "checks_loaded": len(REGISTERED_CHECKS),
         "docs": "/docs",
+        "guest_scans": "/api/public/guest",
     }
 
 
 @app.get("/health")
 def health():
     return {"status": "ok", "ts": datetime.now(timezone.utc).isoformat()}
-
-
-@app.post("/api/public/scans/guest", response_model=GuestScanResponse)
-async def submit_guest_scan(payload: GuestScanSubmit, bg: BackgroundTasks):
-    """
-    One anonymous scan per guest_client_id per UTC day (configurable).
-    Returns poll_token — required to poll status/findings without logging in.
-    """
-    if not settings.guest_scans_enabled:
-        raise HTTPException(status_code=404, detail="Guest scans are disabled.")
-    try:
-        guest_key = str(uuid.UUID(payload.guest_client_id.strip()))
-    except ValueError:
-        raise HTTPException(status_code=400, detail="guest_client_id must be a valid UUID.")
-
-    if not store.try_acquire_guest_scan_slot(guest_key):
-        raise HTTPException(
-            status_code=429,
-            detail="You've used your free guest scan for today (UTC). Come back tomorrow or sign in for more scans.",
-        )
-
-    poll_token = secrets.token_urlsafe(32)
-    owner_sub = f"guest:{guest_key}"
-    store.ensure_user(owner_sub, authorized_override=True)
-
-    scan_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc)
-    estimates = {"quick": 30, "standard": 90, "deep": 300}
-
-    store.create_scan(
-        scan_id=scan_id,
-        owner_sub=owner_sub,
-        target=str(payload.target_url),
-        scan_type=payload.scan_type,
-        depth=payload.depth,
-        submitted_at=now,
-        guest_poll_token=poll_token,
-    )
-
-    req = ScanRequest(
-        scan_id=scan_id,
-        target=str(payload.target_url),
-        scan_type=payload.scan_type,
-        depth=payload.depth,
-        auth_header=payload.auth_header,
-    )
-    bg.add_task(_run_scan_async, req)
-
-    return GuestScanResponse(
-        scan_id=scan_id,
-        status="queued",
-        target=str(payload.target_url),
-        submitted_at=now,
-        estimated_seconds=estimates[payload.depth],
-        poll_token=poll_token,
-    )
-
-
-@app.get("/api/public/scans/{scan_id}", response_model=ScanStatusResponse)
-def public_get_scan_status(scan_id: str, poll_token: str):
-    if not settings.guest_scans_enabled:
-        raise HTTPException(status_code=404)
-    if not store.guest_poll_token_matches(scan_id, poll_token):
-        raise HTTPException(status_code=404, detail="Scan not found.")
-    scan = store.get_scan(scan_id)
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found.")
-    return ScanStatusResponse(**scan)
-
-
-@app.get("/api/public/scans/{scan_id}/findings")
-def public_get_findings(scan_id: str, poll_token: str):
-    if not settings.guest_scans_enabled:
-        raise HTTPException(status_code=404)
-    if not store.guest_poll_token_matches(scan_id, poll_token):
-        raise HTTPException(status_code=404, detail="Scan not found.")
-    scan = store.get_scan(scan_id)
-    if not scan:
-        raise HTTPException(status_code=404)
-    return {
-        "scan_id": scan_id,
-        "findings": store.get_findings(scan_id),
-        "summary": store.get_summary(scan_id),
-    }
 
 
 @app.post("/api/admin/set-account-authorized")
@@ -333,7 +212,7 @@ async def submit_scan(
         depth=payload.depth,
         auth_header=payload.auth_header,
     )
-    bg.add_task(_run_scan_async, req)
+    bg.add_task(run_scan_background, req)
 
     return ScanSubmitResponse(
         scan_id=scan_id,
@@ -422,21 +301,3 @@ def _validate_startup_config():
         ensure_jwt_secret()
     validate_auth_config()
     validate_billing_config()
-
-async def _run_scan_async(req: ScanRequest):
-    engine = ScanEngine()
-    try:
-        store.update_status(req.scan_id, "running", progress=5)
-        result: ScanResult = await engine.run(
-            req,
-            on_progress=lambda p: store.update_status(req.scan_id, "running", progress=p),
-        )
-        store.save_findings(req.scan_id, result.findings)
-        store.complete_scan(
-            req.scan_id,
-            risk_score=result.risk_score,
-            risk_tier=result.risk_tier,
-            completed_at=datetime.now(timezone.utc),
-        )
-    except Exception as e:
-        store.fail_scan(req.scan_id, error=str(e))
