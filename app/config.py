@@ -4,6 +4,16 @@ import os
 from typing import List, Optional
 
 
+def _default_sqlite_path() -> str:
+    """Prefer persistent disk on Render when `/data` is mounted (survives redeploys)."""
+    explicit = (os.getenv("SYNTRIX_SQLITE_PATH") or "").strip()
+    if explicit:
+        return explicit
+    if os.getenv("RENDER") and os.path.isdir("/data"):
+        return "/data/syntrix.db"
+    return "syntrix.db"
+
+
 def _to_bool(raw: str, default: bool = False) -> bool:
     if raw is None:
         return default
@@ -65,12 +75,9 @@ class Settings:
     # User agent for outbound probes
     probe_user_agent: str = "Syntrix-Scanner/0.1 (+https://syntrix.solutions/scanner)"
 
-    # Data store — all accounts, scans, MIRA memory live here (single SQLite file).
-    # Render/Fly/other PaaS: the container filesystem is usually ephemeral unless you attach a persistent disk.
-    # Fix "users disappear after deploy": add a Render Disk (or volume), mount e.g. /data, then set:
-    #   SYNTRIX_SQLITE_PATH=/data/syntrix.db
-    # Keep SYNTRIX_JWT_SECRET stable across deploys or existing JWTs stop verifying (users remain in DB if path persists).
-    sqlite_path: str = os.getenv("SYNTRIX_SQLITE_PATH", "syntrix.db")
+    # Data store — accounts, scans, MIRA memory. On Render with a Disk mounted at `/data`, defaults to
+    # `/data/syntrix.db` so users survive redeploys. Override with SYNTRIX_SQLITE_PATH.
+    sqlite_path: str = _default_sqlite_path()
 
     # Auth flags/settings (password JWT / HS256 only — no third-party IdP).
     auth_required: bool = _to_bool(os.getenv("SYNTRIX_AUTH_REQUIRED"), True)

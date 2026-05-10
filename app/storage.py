@@ -7,6 +7,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import secrets
 import sqlite3
 import uuid
@@ -33,8 +34,12 @@ def _from_iso(value: Optional[str]) -> Optional[datetime]:
 
 class _SQLiteStore:
     def __init__(self):
+        path = settings.sqlite_path
+        parent = os.path.dirname(os.path.abspath(path))
+        if parent:
+            os.makedirs(parent, mode=0o755, exist_ok=True)
         self._lock = Lock()
-        self._conn = sqlite3.connect(settings.sqlite_path, check_same_thread=False)
+        self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_db()
 

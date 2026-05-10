@@ -13,6 +13,7 @@ still verify; logins rehash via ``password_needs_rehash`` when params improve.
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -37,11 +38,19 @@ pwd_context = CryptContext(
 def ensure_jwt_secret() -> str:
     """
     Return HS256 signing secret. If SYNTRIX_JWT_SECRET is unset or too short,
-    generate an ephemeral secret (dev) and log a warning.
+    generate an ephemeral secret (local dev only) and log a warning.
+
+    On Render (RENDER set), we refuse ephemeral secrets — every deploy would invalidate every JWT
+    and logins would appear "broken" until users sign in again.
     """
     raw = (getattr(settings, "jwt_secret", None) or "").strip()
     if raw and len(raw) >= 32:
         return raw
+    if os.getenv("RENDER"):
+        raise RuntimeError(
+            "SYNTRIX_JWT_SECRET must be set to at least 32 characters on Render. "
+            "Without it, the API used to generate a random secret per deploy and all sessions broke."
+        )
     generated = secrets.token_urlsafe(48)
     settings.jwt_secret = generated
     logger.warning(

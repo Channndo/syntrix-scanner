@@ -13,7 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
 from datetime import datetime, timezone
+import logging
+import os
 import uuid
+
+logger = logging.getLogger(__name__)
 
 from app.scanner.engine import ScanRequest
 from app.scanner.checks import REGISTERED_CHECKS
@@ -354,3 +358,9 @@ def _validate_startup_config():
         ensure_jwt_secret()
     validate_auth_config()
     validate_billing_config()
+    if os.getenv("RENDER") and settings.sqlite_path == "syntrix.db":
+        logger.warning(
+            "SQLite path is syntrix.db on ephemeral disk — user accounts are reset on each deploy. "
+            "Add a Render Disk mounted at /data (we then default to /data/syntrix.db) or set "
+            "SYNTRIX_SQLITE_PATH to your persistent volume."
+        )
