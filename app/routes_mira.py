@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
+from io import BytesIO
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
+
+from pypdf import PdfReader
 
 from app.auth_rate_limit import client_ip, mira_rate_limit_or_429
 from app.config import settings
@@ -44,10 +49,22 @@ class MiraChatMessage(BaseModel):
     content: str = Field(..., min_length=1, max_length=12000)
 
 
+class MiraChatAttachment(BaseModel):
+    """One file from the client: UTF-8 text, base64 image, or base64 PDF."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    filename: str = Field(default="file", max_length=240)
+    mime_type: str = Field(default="application/octet-stream", max_length=120)
+    encoding: Literal["utf8", "base64"] = "utf8"
+    data: str = Field(..., max_length=6_000_000)
+
+
 class MiraChatBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     messages: List[MiraChatMessage] = Field(..., min_length=1, max_length=48)
+    attachments: Optional[List[MiraChatAttachment]] = Field(default=None, max_length=10)
 
 
 class MiraChatResponse(BaseModel):
@@ -89,6 +106,186 @@ def _safe_public_base(url: str) -> str:
     if "@" in u.split("://", 1)[-1]:
         return "(redacted)"
     return u or "(unset)"
+
+
+_MIRA_MAX_IMAGES = 4
+_MIRA_MAX_PDF_DECODED_BYTES = 4 * 1024 * 1024
+_MIRA_IMAGE_B64_MAX_CHARS = 5_500_000
+_MIRA_MERGED_ATTACH_TEXT_MAX = 100_000
+_MIRA_PER_TEXT_FILE_MAX = 120_000
+
+_TEXT_MIMES = frozenset(
+    {
+        "text/plain",
+        "text/markdown",
+        "text/csv",
+        "text/xml",
+        "application/json",
+        "application/xml",
+        "application/yaml",
+        "text/yaml",
+        "application/x-yaml",
+    }
+)
+
+
+def _strip_data_url_b64(data: str) -> str:
+    s = (data or "").strip()
+    if s.startswith("data:") and "," in s:
+        return s.split(",", 1)[1].strip()
+    return s
+
+
+def _mime_is_image(mime: str) -> bool:
+    return (mime or "").strip().lower().startswith("image/")
+
+
+def _mime_is_pdf(mime: str, filename: str) -> bool:
+    m = (mime or "").strip().lower()
+    if m == "application/pdf":
+        return True
+    return (filename or "").lower().endswith(".pdf")
+
+
+def _mime_textish(mime: str, filename: str) -> bool:
+    m = (mime or "").strip().lower()
+    if m in _TEXT_MIMES or m.startswith("text/"):
+        return True
+    fn = (filename or "").lower()
+    return fn.endswith(
+        (".txt", ".md", ".markdown", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".env")
+    )
+
+
+def _extract_pdf_text(raw: bytes, max_chars: int = 120_000) -> str:
+    try:
+        reader = PdfReader(BytesIO(raw))
+    except Exception:
+        return ""
+    parts: List[str] = []
+    for i, page in enumerate(reader.pages):
+        if i >= 100:
+            break
+        try:
+            t = page.extract_text() or ""
+        except Exception:
+            t = ""
+        if t and t.strip():
+            parts.append(t.strip())
+    out = "\n\n".join(parts).strip()
+    return out[:max_chars]
+
+
+def merge_mira_attachments(attachments: List[MiraChatAttachment]) -> Tuple[str, List[str], int]:
+    """Build extra user text plus up to four base64 images for Ollama."""
+    extra_parts: List[str] = []
+    images: List[str] = []
+    raw_byte_budget = 0
+
+    for i, item in enumerate(attachments):
+        fname = _sanitize_mira_text(item.filename).strip() or f"file_{i + 1}"
+        mime = (item.mime_type or "").strip().lower()
+        enc = item.encoding
+
+        if _mime_is_image(mime):
+            if enc != "base64":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Image attachment {fname} must use encoding base64.",
+                )
+            b64 = _strip_data_url_b64(item.data)
+            if not b64:
+                raise HTTPException(status_code=400, detail=f"Image {fname} is empty.")
+            if len(b64) > _MIRA_IMAGE_B64_MAX_CHARS:
+                raise HTTPException(status_code=400, detail=f"Image {fname} is too large.")
+            try:
+                decoded = base64.b64decode(b64, validate=True)
+            except binascii.Error as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Image {fname}: invalid base64.",
+                ) from exc
+            if len(decoded) > 4 * 1024 * 1024:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Image {fname} exceeds 4MB after decoding.",
+                )
+            raw_byte_budget += len(decoded)
+            if len(images) >= _MIRA_MAX_IMAGES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Too many images (max {_MIRA_MAX_IMAGES} per message).",
+                )
+            images.append(b64)
+            continue
+
+        if _mime_is_pdf(mime, fname):
+            if enc != "base64":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"PDF {fname} must use encoding base64.",
+                )
+            b64 = _strip_data_url_b64(item.data)
+            try:
+                decoded = base64.b64decode(b64, validate=False)
+            except (binascii.Error, ValueError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"PDF {fname}: invalid base64.",
+                ) from exc
+            if len(decoded) > _MIRA_MAX_PDF_DECODED_BYTES:
+                raise HTTPException(status_code=400, detail=f"PDF {fname} exceeds 4MB.")
+            raw_byte_budget += len(decoded)
+            extracted = _extract_pdf_text(decoded)
+            snippet = _sanitize_mira_text(extracted) if extracted else ""
+            if not snippet.strip():
+                extra_parts.append(f"--- Attached PDF: {fname} (no extractable text) ---")
+            else:
+                cap_file = min(len(snippet), _MIRA_PER_TEXT_FILE_MAX)
+                extra_parts.append(f"--- Attached PDF: {fname} ---\n{snippet[:cap_file]}")
+            continue
+
+        if _mime_textish(mime, fname):
+            if enc == "base64":
+                b64 = _strip_data_url_b64(item.data)
+                try:
+                    decoded = base64.b64decode(b64, validate=False)
+                except (binascii.Error, ValueError) as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"File {fname}: invalid base64.",
+                    ) from exc
+                text = decoded.decode("utf-8", errors="replace")
+            else:
+                text = item.data
+            text = _sanitize_mira_text(text)
+            if not text.strip():
+                extra_parts.append(f"--- Attached file: {fname} (empty) ---")
+            else:
+                cap_file = min(len(text), _MIRA_PER_TEXT_FILE_MAX)
+                extra_parts.append(f"--- Attached file: {fname} ---\n{text[:cap_file]}")
+            raw_byte_budget += cap_file
+            continue
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported attachment ({mime or 'unknown type'}) for {fname}. "
+                "Use an image, PDF, or text-based file (txt, md, json, csv, yaml, xml, log)."
+            ),
+        )
+
+    merged = "\n\n".join(extra_parts).strip()
+    if len(merged) > _MIRA_MERGED_ATTACH_TEXT_MAX:
+        merged = merged[:_MIRA_MERGED_ATTACH_TEXT_MAX] + "\n[…attachment text truncated…]"
+    return merged, images, raw_byte_budget
+
+
+def _last_user_message_index(messages: List[MiraChatMessage]) -> Optional[int]:
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].role == "user":
+            return i
+    return None
 
 
 def _last_user_text(messages: List[MiraChatMessage]) -> str:
@@ -179,6 +376,9 @@ async def mira_chat(
     """
     Chat via Ollama `/api/chat`. Open to anonymous users; optional Bearer JWT for per-user memory.
     Configure OLLAMA_BASE_URL and OLLAMA_MODEL on the API host.
+
+    Optional `attachments` (max 10) are merged into the latest user turn: UTF-8 text and extracted
+    PDF text become prompt context; images are passed as base64 to Ollama when the model supports vision.
     """
     _require_mira_enabled()
     ip = client_ip(request)
@@ -187,13 +387,21 @@ async def mira_chat(
         settings.mira_rate_max_requests,
         settings.mira_rate_window_sec,
     )
+    attach_list = list(payload.attachments or [])
+    extra_text, image_b64s, attach_byte_metric = (
+        merge_mira_attachments(attach_list) if attach_list else ("", [], 0)
+    )
+
     client_chars = sum(len(m.content) for m in payload.messages)
+    client_chars += len(extra_text) + sum(len(b) for b in image_b64s)
     logger.info(
-        "mira_chat start ip=%s authed=%s messages=%d client_chars=%d",
+        "mira_chat start ip=%s authed=%s messages=%d client_chars=%d attachments=%d attach_bytes~=%d",
         ip,
         bool(user),
         len(payload.messages),
         client_chars,
+        len(attach_list),
+        attach_byte_metric,
     )
 
     base = (settings.ollama_base_url or "").strip().rstrip("/")
@@ -209,14 +417,33 @@ async def mira_chat(
             detail="OLLAMA_MODEL is not configured on this API.",
         )
 
+    last_u = _last_user_message_index(payload.messages)
     ollama_messages: List[Dict[str, Any]] = [{"role": "system", "content": _system_prompt_for_user(user)}]
-    for m in payload.messages:
+    for i, m in enumerate(payload.messages):
         if m.role not in _CLIENT_MESSAGE_ROLES:
             continue
         piece = _sanitize_mira_text(m.content)
+        last_user_turn = last_u is not None and i == last_u and m.role == "user"
         if not piece:
-            continue
-        ollama_messages.append({"role": m.role, "content": piece})
+            if last_user_turn and (extra_text.strip() or image_b64s):
+                piece = (
+                    "Please analyze the attached file(s). "
+                    "Focus on anything security-relevant or actionable."
+                )
+            else:
+                continue
+        entry: Dict[str, Any] = {"role": m.role, "content": piece}
+        if last_user_turn and (extra_text.strip() or image_b64s):
+            if extra_text.strip():
+                merged = f"{extra_text}\n\n--- User message ---\n{piece}"
+            else:
+                merged = piece
+            if len(merged) > 200_000:
+                merged = merged[:200_000] + "\n[…truncated…]"
+            entry["content"] = merged
+            if image_b64s:
+                entry["images"] = image_b64s
+        ollama_messages.append(entry)
 
     if len(ollama_messages) < 2:
         raise HTTPException(
