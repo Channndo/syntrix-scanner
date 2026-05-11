@@ -49,7 +49,7 @@ class Settings:
             "SYNTRIX_ALLOWED_ORIGINS",
             "http://localhost:3000,http://localhost:5173,"
             "http://localhost:8888,http://127.0.0.1:8888,"
-            "https://syntrix.solutions",
+            "https://syntrix.solutions,https://www.syntrix.solutions",
         ).split(",")
         if x.strip()
     ]
