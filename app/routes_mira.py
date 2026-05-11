@@ -22,7 +22,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["mira"])
 
-_ALLOWED_ROLES = frozenset({"user", "assistant", "system"})
+# Roles the *client* may send. We inject the real system prompt server-side; client "system"
+# turns are ignored so they cannot sit beside or override our system message in the model API.
+_CLIENT_MESSAGE_ROLES = frozenset({"user", "assistant"})
+
+
+def _sanitize_mira_text(text: str) -> str:
+    """Remove NULs and C0 control chars (keep tab/newline/cr). Does not stop prompt injection."""
+    if not text:
+        return ""
+    t = text.replace("\x00", "").replace("\ufeff", "")
+    return "".join(
+        ch for ch in t if ch in "\t\n\r" or (ord(ch) >= 32 and ord(ch) != 127)
+    )
 
 
 class MiraChatMessage(BaseModel):
@@ -82,7 +94,7 @@ def _safe_public_base(url: str) -> str:
 def _last_user_text(messages: List[MiraChatMessage]) -> str:
     for m in reversed(messages):
         if m.role == "user":
-            return m.content.strip()
+            return _sanitize_mira_text(m.content).strip()
     return ""
 
 
@@ -186,9 +198,18 @@ async def mira_chat(
 
     ollama_messages: List[Dict[str, Any]] = [{"role": "system", "content": _system_prompt_for_user(user)}]
     for m in payload.messages:
-        if m.role not in _ALLOWED_ROLES:
+        if m.role not in _CLIENT_MESSAGE_ROLES:
             continue
-        ollama_messages.append({"role": m.role, "content": m.content})
+        piece = _sanitize_mira_text(m.content)
+        if not piece:
+            continue
+        ollama_messages.append({"role": m.role, "content": piece})
+
+    if len(ollama_messages) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="No usable user/assistant content after sanitization.",
+        )
 
     url = f"{base}/api/chat"
     options: Dict[str, Any] = {"temperature": float(settings.ollama_temperature)}
