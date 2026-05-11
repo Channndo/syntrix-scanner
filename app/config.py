@@ -130,6 +130,8 @@ class Settings:
     # Optional generation limits (passed to Ollama options when set).
     ollama_num_ctx: Optional[int] = _optional_int_env("OLLAMA_NUM_CTX")
     ollama_num_predict: Optional[int] = _optional_int_env("OLLAMA_NUM_PREDICT")
+    # httpx read timeout for Ollama /api/chat (CPU-only hosts often need >120s on first token).
+    ollama_http_timeout_seconds: float = _float_env("OLLAMA_HTTP_TIMEOUT_SECONDS", 300.0)
 
     def initial_authorized_as_int(self, email: Optional[str]) -> int:
         """1 = may use product (when authorization gate is on); 0 = JWT ok but API gated."""

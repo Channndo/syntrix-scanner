@@ -142,8 +142,11 @@ async def mira_chat(
     if settings.ollama_api_key:
         ollama_headers["Authorization"] = f"Bearer {settings.ollama_api_key}"
 
+    read_timeout = max(30.0, float(settings.ollama_http_timeout_seconds))
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(read_timeout, connect=15.0)
+        ) as client:
             r = await client.post(url, json=body, headers=ollama_headers)
     except httpx.ConnectError as exc:
         logger.warning("MIRA Ollama connect failed: %s", exc)
