@@ -127,10 +127,14 @@ async def mira_chat(
 
     url = f"{base}/api/chat"
     options: Dict[str, Any] = {"temperature": float(settings.ollama_temperature)}
-    if settings.ollama_num_ctx is not None:
-        options["num_ctx"] = settings.ollama_num_ctx
-    if settings.ollama_num_predict is not None:
-        options["num_predict"] = settings.ollama_num_predict
+    # When unset, Ollama uses model defaults (often a very large n_ctx), which is extremely slow on
+    # CPU-only hosts and routinely trips MIRA's HTTP read timeout. Prefer bounded work unless tuned.
+    options["num_ctx"] = (
+        int(settings.ollama_num_ctx) if settings.ollama_num_ctx is not None else 8192
+    )
+    options["num_predict"] = (
+        int(settings.ollama_num_predict) if settings.ollama_num_predict is not None else 1024
+    )
     body = {
         "model": model,
         "messages": ollama_messages,
@@ -145,7 +149,9 @@ async def mira_chat(
     read_timeout = max(30.0, float(settings.ollama_http_timeout_seconds))
     try:
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(read_timeout, connect=15.0)
+            timeout=httpx.Timeout(
+                connect=20.0, read=read_timeout, write=read_timeout, pool=30.0
+            )
         ) as client:
             r = await client.post(url, json=body, headers=ollama_headers)
     except httpx.ConnectError as exc:
@@ -157,7 +163,10 @@ async def mira_chat(
     except httpx.TimeoutException as exc:
         raise HTTPException(
             status_code=504,
-            detail="The language model took too long to respond. Try a shorter question.",
+            detail=(
+                "The language model took too long to respond. Try a shorter question, "
+                "or lower OLLAMA_NUM_CTX / OLLAMA_NUM_PREDICT on the API host for CPU-only Ollama."
+            ),
         ) from exc
 
     if r.status_code >= 400:
