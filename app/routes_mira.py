@@ -127,14 +127,12 @@ async def mira_chat(
 
     url = f"{base}/api/chat"
     options: Dict[str, Any] = {"temperature": float(settings.ollama_temperature)}
-    # When unset, Ollama uses model defaults (often a very large n_ctx), which is extremely slow on
-    # CPU-only hosts and routinely trips MIRA's HTTP read timeout. Prefer bounded work unless tuned.
-    options["num_ctx"] = (
-        int(settings.ollama_num_ctx) if settings.ollama_num_ctx is not None else 8192
-    )
-    options["num_predict"] = (
-        int(settings.ollama_num_predict) if settings.ollama_num_predict is not None else 1024
-    )
+    # CPU-only Ollama behind nginx/Render: large n_ctx or num_predict stalls first-token for minutes.
+    # Defaults keep MIRA usable; hard caps stop a mis-set OLLAMA_NUM_* on Render from undoing that.
+    _ctx = int(settings.ollama_num_ctx) if settings.ollama_num_ctx is not None else 4096
+    _pred = int(settings.ollama_num_predict) if settings.ollama_num_predict is not None else 512
+    options["num_ctx"] = min(max(512, _ctx), 8192)
+    options["num_predict"] = min(max(64, _pred), 2048)
     body = {
         "model": model,
         "messages": ollama_messages,
@@ -164,8 +162,9 @@ async def mira_chat(
         raise HTTPException(
             status_code=504,
             detail=(
-                "The language model took too long to respond. Try a shorter question, "
-                "or lower OLLAMA_NUM_CTX / OLLAMA_NUM_PREDICT on the API host for CPU-only Ollama."
+                "The language model took too long to respond. On CPU-only Ollama, set "
+                "OLLAMA_NUM_CTX / OLLAMA_NUM_PREDICT lower on Render, raise OLLAMA_HTTP_TIMEOUT_SECONDS, "
+                "and ensure nginx proxy_read_timeout is not below the scanner timeout."
             ),
         ) from exc
 
