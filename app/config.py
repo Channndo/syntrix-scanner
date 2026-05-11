@@ -40,6 +40,16 @@ def _optional_int_env(name: str) -> Optional[int]:
         return None
 
 
+def _int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 class Settings:
     """Environment-driven config. Override via env vars in deployment."""
 
@@ -132,6 +142,9 @@ class Settings:
     ollama_num_predict: Optional[int] = _optional_int_env("OLLAMA_NUM_PREDICT")
     # httpx read timeout for Ollama /api/chat (CPU-only hosts often need >120s on first token).
     ollama_http_timeout_seconds: float = _float_env("OLLAMA_HTTP_TIMEOUT_SECONDS", 900.0)
+    # MIRA-only sliding window (separate bucket from auth endpoints).
+    mira_rate_window_sec: float = _float_env("MIRA_RATE_WINDOW_SECONDS", 60.0)
+    mira_rate_max_requests: int = _int_env("MIRA_RATE_MAX_REQUESTS", 12)
 
     def initial_authorized_as_int(self, email: Optional[str]) -> int:
         """1 = may use product (when authorization gate is on); 0 = JWT ok but API gated."""

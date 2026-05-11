@@ -13,6 +13,9 @@ _RATE_HITS: Dict[str, List[float]] = {}
 _RATE_WINDOW_SEC = 60.0
 _RATE_MAX_REQUESTS = 25
 
+_MIRA_RATE_LOCK = threading.Lock()
+_MIRA_RATE_HITS: Dict[str, List[float]] = {}
+
 
 def client_ip(request: Request) -> str:
     ff = (request.headers.get("x-forwarded-for") or "").strip()
@@ -34,5 +37,23 @@ def rate_limit_or_429(ip: str) -> None:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Too many attempts. Try again shortly.",
+            )
+        hits.append(now)
+
+
+def mira_rate_limit_or_429(ip: str, max_requests: int, window_sec: float) -> None:
+    """Sliding-window limiter for MIRA /chat only (does not share the auth bucket)."""
+    if max_requests <= 0 or window_sec <= 0:
+        return
+    now = time.monotonic()
+    with _MIRA_RATE_LOCK:
+        hits = _MIRA_RATE_HITS.setdefault(ip, [])
+        cutoff = now - window_sec
+        while hits and hits[0] < cutoff:
+            hits.pop(0)
+        if len(hits) >= max_requests:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many MIRA requests. Try again shortly.",
             )
         hits.append(now)

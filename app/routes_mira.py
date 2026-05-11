@@ -12,7 +12,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.auth_rate_limit import client_ip, rate_limit_or_429
+from app.auth_rate_limit import client_ip, mira_rate_limit_or_429
 from app.config import settings
 from app.deps import AuthenticatedUser, optional_user
 from app.mira_prompt import MIRA_SYSTEM_PROMPT
@@ -181,7 +181,20 @@ async def mira_chat(
     Configure OLLAMA_BASE_URL and OLLAMA_MODEL on the API host.
     """
     _require_mira_enabled()
-    rate_limit_or_429(client_ip(request))
+    ip = client_ip(request)
+    mira_rate_limit_or_429(
+        ip,
+        settings.mira_rate_max_requests,
+        settings.mira_rate_window_sec,
+    )
+    client_chars = sum(len(m.content) for m in payload.messages)
+    logger.info(
+        "mira_chat start ip=%s authed=%s messages=%d client_chars=%d",
+        ip,
+        bool(user),
+        len(payload.messages),
+        client_chars,
+    )
 
     base = (settings.ollama_base_url or "").strip().rstrip("/")
     model = (settings.ollama_model or "").strip()
@@ -239,12 +252,25 @@ async def mira_chat(
                 client, url, body, ollama_headers, model, wall_seconds=wall
             )
     except httpx.ConnectError as exc:
-        logger.warning("MIRA Ollama connect failed: %s", exc)
+        logger.warning(
+            "mira_chat ollama_connect_fail ip=%s messages=%d client_chars=%d err=%s",
+            ip,
+            len(payload.messages),
+            client_chars,
+            exc,
+        )
         raise HTTPException(
             status_code=503,
             detail="Could not reach the language model server. Check OLLAMA_BASE_URL and network access.",
         ) from exc
     except httpx.TimeoutException as exc:
+        logger.warning(
+            "mira_chat ollama_http_timeout ip=%s messages=%d client_chars=%d detail=%s",
+            ip,
+            len(payload.messages),
+            client_chars,
+            str(exc)[:200],
+        )
         raise HTTPException(
             status_code=504,
             detail=(
@@ -256,6 +282,12 @@ async def mira_chat(
         ) from exc
 
     if not content:
+        logger.warning(
+            "mira_chat empty_reply ip=%s messages=%d client_chars=%d",
+            ip,
+            len(payload.messages),
+            client_chars,
+        )
         raise HTTPException(status_code=502, detail="Empty reply from model.")
 
     if user:
@@ -267,4 +299,13 @@ async def mira_chat(
             except Exception:
                 logger.exception("MIRA user memory update failed for sub=%s", user.sub)
 
+    logger.info(
+        "mira_chat ok ip=%s authed=%s messages=%d client_chars=%d reply_chars=%d model=%s",
+        ip,
+        bool(user),
+        len(payload.messages),
+        client_chars,
+        len(content),
+        used_model,
+    )
     return MiraChatResponse(message=content, model=used_model)
