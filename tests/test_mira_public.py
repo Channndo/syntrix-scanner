@@ -22,6 +22,7 @@ def test_mira_status_public():
     assert "enabled" in body
     assert "model" in body
     assert "base_url" in body
+    assert "git_commit" in body
 
 
 def test_mira_chat_anonymous_not_401():

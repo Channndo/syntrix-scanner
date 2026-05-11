@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import httpx
@@ -46,6 +47,8 @@ class MiraStatusResponse(BaseModel):
     enabled: bool
     model: str
     base_url: str
+    # Render sets RENDER_GIT_COMMIT on deploy — helps verify production picked up latest MIRA code.
+    git_commit: Optional[str] = None
 
 
 def _require_mira_enabled() -> None:
@@ -59,10 +62,12 @@ def _require_mira_enabled() -> None:
 @router.get("/status", response_model=MiraStatusResponse)
 def mira_status():
     """Public: lets the landing page hide or soften UI when MIRA is off."""
+    commit = (os.getenv("RENDER_GIT_COMMIT") or "").strip() or None
     return MiraStatusResponse(
         enabled=bool(settings.mira_enabled),
         model=(settings.ollama_model or "").strip() or "unset",
         base_url=_safe_public_base(settings.ollama_base_url),
+        git_commit=commit,
     )
 
 
@@ -205,7 +210,8 @@ async def mira_chat(
 
     wall = max(120.0, float(settings.ollama_http_timeout_seconds)) + 60.0
     # Stream: read=None avoids failing on long gaps *before first token*; wall caps total time.
-    stream_timeout = httpx.Timeout(connect=25.0, read=None, write=120.0, pool=30.0)
+    # Generous connect/write so Render→user-VPS cold paths do not trip httpx before Ollama streams.
+    stream_timeout = httpx.Timeout(connect=90.0, read=None, write=300.0, pool=90.0)
     try:
         async with httpx.AsyncClient(timeout=stream_timeout) as client:
             content, used_model = await _ollama_chat_stream_aggregate(
@@ -221,9 +227,10 @@ async def mira_chat(
         raise HTTPException(
             status_code=504,
             detail=(
-                "The language model took too long to respond. On CPU-only Ollama, set "
-                "OLLAMA_NUM_CTX / OLLAMA_NUM_PREDICT lower on Render, raise OLLAMA_HTTP_TIMEOUT_SECONDS, "
-                "and ensure nginx proxy_read_timeout is not below the scanner timeout."
+                "The language model took too long to respond (HTTP transport). "
+                "If this persists, confirm Render deployed latest scanner (GET /api/mira/status → git_commit) "
+                "and nginx has proxy_buffering off; detail: "
+                + str(exc)[:200]
             ),
         ) from exc
 
