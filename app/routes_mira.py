@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -93,6 +95,64 @@ def _system_prompt_for_user(user: Optional[AuthenticatedUser]) -> str:
     )
 
 
+async def _ollama_chat_stream_aggregate(
+    client: httpx.AsyncClient,
+    url: str,
+    body: Dict[str, Any],
+    headers: Dict[str, str],
+    model_fallback: str,
+    wall_seconds: float,
+) -> Tuple[str, str]:
+    """
+    Ollama /api/chat with stream=true. httpx read timeout is *per idle gap between chunks*; a long
+    time-to-first-token on non-streaming POST counts as one read and trips MIRA on CPU hosts.
+    We disable per-read timeout on the stream and cap total wall time with asyncio.wait_for.
+    """
+    payload = {**body, "stream": True}
+    state: Dict[str, Any] = {"model": model_fallback, "parts": []}
+
+    async def _consume() -> None:
+        async with client.stream("POST", url, json=payload, headers=headers) as r:
+            if r.status_code >= 400:
+                raw = (await r.aread()).decode("utf-8", errors="replace")[:800]
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Model server error: {raw}",
+                )
+            async for line in r.aiter_lines():
+                line = (line or "").strip()
+                if not line:
+                    continue
+                try:
+                    obj: Any = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                mname = obj.get("model")
+                if isinstance(mname, str) and mname.strip():
+                    state["model"] = mname.strip()
+                msg = obj.get("message")
+                if isinstance(msg, dict):
+                    piece = msg.get("content")
+                    if isinstance(piece, str) and piece:
+                        state["parts"].append(piece)
+
+    try:
+        await asyncio.wait_for(_consume(), timeout=wall_seconds)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "The language model took too long to respond (stream wall clock). "
+                "Try a smaller OLLAMA_MODEL, lower OLLAMA_NUM_CTX, or run Ollama on GPU."
+            ),
+        ) from exc
+
+    content = "".join(state["parts"]).strip()
+    return content, str(state["model"] or model_fallback)
+
+
 @router.post("/chat", response_model=MiraChatResponse)
 async def mira_chat(
     request: Request,
@@ -133,10 +193,9 @@ async def mira_chat(
     _pred = int(settings.ollama_num_predict) if settings.ollama_num_predict is not None else 512
     options["num_ctx"] = min(max(512, _ctx), 8192)
     options["num_predict"] = min(max(64, _pred), 2048)
-    body = {
+    body: Dict[str, Any] = {
         "model": model,
         "messages": ollama_messages,
-        "stream": False,
         "options": options,
     }
 
@@ -144,14 +203,14 @@ async def mira_chat(
     if settings.ollama_api_key:
         ollama_headers["Authorization"] = f"Bearer {settings.ollama_api_key}"
 
-    read_timeout = max(30.0, float(settings.ollama_http_timeout_seconds))
+    wall = max(120.0, float(settings.ollama_http_timeout_seconds)) + 60.0
+    # Stream: read=None avoids failing on long gaps *before first token*; wall caps total time.
+    stream_timeout = httpx.Timeout(connect=25.0, read=None, write=120.0, pool=30.0)
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(
-                connect=20.0, read=read_timeout, write=read_timeout, pool=30.0
+        async with httpx.AsyncClient(timeout=stream_timeout) as client:
+            content, used_model = await _ollama_chat_stream_aggregate(
+                client, url, body, ollama_headers, model, wall_seconds=wall
             )
-        ) as client:
-            r = await client.post(url, json=body, headers=ollama_headers)
     except httpx.ConnectError as exc:
         logger.warning("MIRA Ollama connect failed: %s", exc)
         raise HTTPException(
@@ -168,27 +227,6 @@ async def mira_chat(
             ),
         ) from exc
 
-    if r.status_code >= 400:
-        detail = r.text[:500]
-        try:
-            err_json = r.json()
-            if isinstance(err_json, dict) and err_json.get("error"):
-                detail = str(err_json["error"])[:500]
-        except Exception:
-            pass
-        logger.warning("Ollama error %s: %s", r.status_code, detail)
-        raise HTTPException(
-            status_code=502,
-            detail=f"Model server error: {detail}",
-        )
-
-    try:
-        data = r.json()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Invalid response from model server.") from exc
-
-    msg = data.get("message") or {}
-    content = (msg.get("content") or "").strip()
     if not content:
         raise HTTPException(status_code=502, detail="Empty reply from model.")
 
@@ -201,4 +239,4 @@ async def mira_chat(
             except Exception:
                 logger.exception("MIRA user memory update failed for sub=%s", user.sub)
 
-    return MiraChatResponse(message=content, model=str(data.get("model") or model))
+    return MiraChatResponse(message=content, model=used_model)
