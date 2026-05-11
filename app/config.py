@@ -145,6 +145,12 @@ class Settings:
     # MIRA-only sliding window (separate bucket from auth endpoints).
     mira_rate_window_sec: float = _float_env("MIRA_RATE_WINDOW_SECONDS", 60.0)
     mira_rate_max_requests: int = _int_env("MIRA_RATE_MAX_REQUESTS", 12)
+    # Interactive OpenAPI (Swagger/Redoc/OpenAPI JSON). Default off on Render to reduce casual
+    # abuse of documented endpoints from the browser; enable with SYNTRIX_ENABLE_API_DOCS=true.
+    api_docs_enabled: bool = _to_bool(
+        os.getenv("SYNTRIX_ENABLE_API_DOCS"),
+        not bool(os.getenv("RENDER")),
+    )
 
     def initial_authorized_as_int(self, email: Optional[str]) -> int:
         """1 = may use product (when authorization gate is on); 0 = JWT ok but API gated."""

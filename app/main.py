@@ -39,10 +39,14 @@ from app.routes_mira import router as mira_router
 from app.schemas_scan import ScanSubmit, ScanSubmitResponse, ScanStatusResponse
 from app.scan_runner import run_scan_background
 
+_doc_base = "/docs" if settings.api_docs_enabled else None
 app = FastAPI(
     title="Syntrix Scanner API",
     description="Security scanning for MCP servers and agentic AI deployments",
     version="0.1.0",
+    docs_url=_doc_base,
+    redoc_url=("/redoc" if settings.api_docs_enabled else None),
+    openapi_url=("/openapi.json" if settings.api_docs_enabled else None),
 )
 
 app.add_middleware(
@@ -106,13 +110,17 @@ class WaitlistIngestPayload(BaseModel):
 
 @app.get("/")
 def root():
-    return {
+    out = {
         "service": "syntrix-scanner",
         "version": "0.1.0",
         "checks_loaded": len(REGISTERED_CHECKS),
-        "docs": "/docs",
         "guest_scans": "/api/public/guest",
     }
+    if settings.api_docs_enabled:
+        out["docs"] = "/docs"
+        out["redoc"] = "/redoc"
+        out["openapi"] = "/openapi.json"
+    return out
 
 
 @app.get("/health")
