@@ -693,6 +693,18 @@ class _SQLiteStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def canonical_email_for_sub(self, auth_sub: str, jwt_email: Optional[str] = None) -> str:
+        """Stable login email for policy checks — prefer ``password_accounts`` over optional JWT ``email``."""
+        pa = self.get_password_account_by_sub(auth_sub)
+        if pa and pa.get("email"):
+            return str(pa["email"]).strip().lower()
+        if jwt_email and str(jwt_email).strip():
+            return str(jwt_email).strip().lower()
+        row = self.get_user(auth_sub)
+        if row and row.get("email"):
+            return str(row["email"]).strip().lower()
+        return ""
+
     def get_user(self, auth_sub: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             row = self._conn.execute(

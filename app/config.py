@@ -128,12 +128,8 @@ class Settings:
     # POST /api/admin/set-account-authorized — Authorization: Bearer <secret>
     # Use a long random value only in env (e.g. openssl rand -hex 32); never commit it.
     admin_secret: str = os.getenv("SYNTRIX_ADMIN_SECRET", "")
-    # Comma-separated emails that receive role "admin" in signed JWTs (same Argon2 password storage as everyone else).
-    # Default ensures the primary operator account is admin when SYNTRIX_ADMIN_EMAILS is unset on the host.
-    admin_emails: str = os.getenv(
-        "SYNTRIX_ADMIN_EMAILS",
-        "chandler.hill.24@gmail.com",
-    )
+    # In-app admin / operator (JWT role, unlimited scans when billing is on). Optional override for staging.
+    sole_admin_email: str = (os.getenv("SYNTRIX_SOLE_ADMIN_EMAIL") or "chandler@syntrix.solutions").strip().lower()
 
     # Anonymous guest scans (no account): limited per browser guest id per UTC day
     guest_scans_enabled: bool = _to_bool(os.getenv("SYNTRIX_GUEST_SCANS_ENABLED"), True)
@@ -171,6 +167,8 @@ class Settings:
         if not email or not str(email).strip():
             return 0
         em = str(email).strip().lower()
+        if self.is_admin_email(em):
+            return 1
         for part in self.authorized_emails.split(","):
             e = part.strip().lower()
             if e and em == e:
@@ -186,15 +184,10 @@ class Settings:
         return 0
 
     def is_admin_email(self, email: Optional[str]) -> bool:
-        """True if email is listed in admin_emails / SYNTRIX_ADMIN_EMAILS (case-insensitive)."""
+        """True only for the sole in-app admin account (JWT ``role`` / account UI)."""
         if not email or not str(email).strip():
             return False
-        em = str(email).strip().lower()
-        for part in self.admin_emails.split(","):
-            e = part.strip().lower()
-            if e and em == e:
-                return True
-        return False
+        return str(email).strip().lower() == self.sole_admin_email
 
 
 settings = Settings()

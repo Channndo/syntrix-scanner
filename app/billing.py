@@ -47,6 +47,9 @@ def require_active_subscription(
 ) -> AuthenticatedUser:
     if not settings.billing_required:
         return user
+    em = store.canonical_email_for_sub(user.sub, user.email)
+    if settings.is_admin_email(em):
+        return user
     sub = store.get_subscription(user.sub)
     if not _is_active_subscription(sub.get("status", "inactive")):
         raise HTTPException(

@@ -55,7 +55,7 @@ PASSWORD_MAX_AGE_DAYS = 90
 PASSWORD_HISTORY_SIZE = 24
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-MAX_AVATAR_BYTES = 512 * 1024
+MAX_AVATAR_BYTES = 2 * 1024 * 1024
 
 
 class PasswordRegisterBody(BaseModel):
@@ -187,11 +187,8 @@ def _new_password_reuses_history(
 def _me_json(user: AuthenticatedUser, raw_row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """JSON-safe profile (no avatar bytes)."""
     sub = user.sub
-    email = user.email or ""
-    claims = user.raw_claims or {}
-    role = claims.get("role")
-    if role not in ("admin", "user"):
-        role = "admin" if settings.is_admin_email(email) else "user"
+    email = store.canonical_email_for_sub(sub, user.email)
+    role = "admin" if settings.is_admin_email(email) else "user"
 
     has_avatar = bool(raw_row and raw_row.get("avatar_png"))
     fn = ""
@@ -203,10 +200,12 @@ def _me_json(user: AuthenticatedUser, raw_row: Optional[Dict[str, Any]]) -> Dict
         created_at = raw_row.get("created_at")
 
     subrec = store.get_subscription(sub)
+    admin_unlimited = settings.is_admin_email(email)
     return {
         "id": _public_id(sub),
         "email": email,
         "role": role,
+        "scanner_unlimited": admin_unlimited,
         "first_name": fn,
         "last_name": ln,
         "created_at": created_at,
@@ -215,6 +214,7 @@ def _me_json(user: AuthenticatedUser, raw_row: Optional[Dict[str, Any]]) -> Dict
             "status": subrec.get("status") or "inactive",
             "plan_id": subrec.get("plan_id"),
             "current_period_end": subrec.get("current_period_end"),
+            "billing_exempt": admin_unlimited,
         },
     }
 
@@ -246,11 +246,22 @@ async def password_register(request: Request, payload: PasswordRegisterBody):
         raise HTTPException(status_code=409, detail="email already registered") from None
 
     token = mint_access_token(user["user_sub"], user["email"])
-    return {
+    out: Dict[str, Any] = {
         "access_token": token,
         "token_type": "bearer",
-        "user": {"id": user["id"], "email": user["email"]},
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "role": "admin" if settings.is_admin_email(em) else "user",
+            "scanner_unlimited": settings.is_admin_email(em),
+        },
     }
+    if settings.is_admin_email(em):
+        out["account_message"] = (
+            "This is the sole operator account. You have unlimited authenticated scans without "
+            "a paid subscription, including when billing is required for other users."
+        )
+    return out
 
 
 @router.post("/password/login")
@@ -481,9 +492,10 @@ async def upload_avatar(
     rate_limit_or_429(client_ip(request))
     data = await file.read()
     if len(data) > MAX_AVATAR_BYTES:
+        mb = MAX_AVATAR_BYTES // (1024 * 1024)
         raise HTTPException(
             status_code=413,
-            detail=f"PNG must be at most {MAX_AVATAR_BYTES // 1024} KB",
+            detail=f"PNG must be at most {mb} MB",
         )
     if len(data) < len(PNG_MAGIC) or not data.startswith(PNG_MAGIC):
         raise HTTPException(status_code=400, detail="file must be a PNG image")

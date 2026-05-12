@@ -5,13 +5,26 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
 class ScanSubmit(BaseModel):
     """What the UI POSTs to start a scan — target, depth, optional upstream auth header."""
 
-    target_url: HttpUrl = Field(..., description="MCP server URL or agent endpoint")
+    target_url: HttpUrl = Field(
+        ...,
+        description="Full URL, or hostname / IP — if the scheme is omitted, https:// is assumed.",
+    )
+
+    @field_validator("target_url", mode="before")
+    @classmethod
+    def _assume_https_if_no_scheme(cls, v: object) -> object:
+        if isinstance(v, str):
+            s = v.strip()
+            if s and not s.lower().startswith(("http://", "https://")):
+                return f"https://{s}"
+        return v
+
     scan_type: Literal["mcp", "agent_endpoint", "tunnel"] = "mcp"
     depth: Literal["quick", "standard", "deep"] = "standard"
     auth_header: Optional[str] = Field(None, description="Optional auth header for authenticated scans")

@@ -145,21 +145,26 @@ async def check_network_exposure(ctx: CheckContext):
             cvss=9.8,
         ))
     elif ctx.scan_type in ("mcp",):
-        # User said "this is an MCP server" but we didn't find MCP signals — informational
-        out.append(CheckOutcome(
-            check_id="NET-01-NOPROTO",
-            title="No MCP protocol signals detected at target",
-            severity="info",
-            description=(
-                "The target was submitted as an MCP server but its responses do not contain "
-                "JSON-RPC 2.0 framing, MCP method names, or recognizable tool metadata. The "
-                "endpoint may not be an MCP server, may require authentication to expose its "
-                "protocol surface, or may use a non-standard path."
-            ),
-            evidence=f"GET {ctx.target} -> {baseline.status_code} (no MCP signals in {len(baseline.content)} bytes)",
-            remediation="Verify the URL points to an MCP server endpoint. Try the SSE or message path explicitly.",
-            owasp_id=None,
-        ))
+        # User said "this is an MCP server" but we didn't find MCP signals — informational,
+        # unless the baseline is clearly a web page (common when the marketing site is scanned as MCP).
+        ct = (baseline.headers.get("content-type") or "").lower()
+        sniff = baseline_text.lstrip().lower()
+        looks_like_webpage = "text/html" in ct or sniff.startswith(("<!doctype html", "<html"))
+        if not looks_like_webpage:
+            out.append(CheckOutcome(
+                check_id="NET-01-NOPROTO",
+                title="No MCP protocol signals detected at target",
+                severity="info",
+                description=(
+                    "The target was submitted as an MCP server but its responses do not contain "
+                    "JSON-RPC 2.0 framing, MCP method names, or recognizable tool metadata. The "
+                    "endpoint may not be an MCP server, may require authentication to expose its "
+                    "protocol surface, or may use a non-standard path."
+                ),
+                evidence=f"GET {ctx.target} -> {baseline.status_code} (no MCP signals in {len(baseline.content)} bytes)",
+                remediation="Verify the URL points to an MCP server endpoint. Try the SSE or message path explicitly.",
+                owasp_id=None,
+            ))
     # If scan_type is agent_endpoint / tunnel and there are no MCP signals,
     # we deliberately don't fire NET-01 — other checks (TLS, CORS, RATE, ERR) still run.
 

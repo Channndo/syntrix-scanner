@@ -25,6 +25,9 @@ def require_authorized_account(user: AuthenticatedUser = Depends(require_user)) 
     """
     if not settings.require_authorized_account:
         return user
+    em = store.canonical_email_for_sub(user.sub, user.email)
+    if settings.is_admin_email(em):
+        return user
     row = store.get_user(user.sub)
     if row and int(row.get("authorized", 0)) == 1:
         return user

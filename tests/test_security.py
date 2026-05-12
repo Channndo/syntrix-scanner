@@ -173,6 +173,95 @@ def test_inactive_subscription_rejected():
         assert response.status_code == 403
 
 
+def test_sole_operator_unlimited_scans_without_subscription():
+    """chandler@syntrix.solutions may POST /api/scans even when SYNTRIX_BILLING_REQUIRED is true."""
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_billing = settings.billing_required
+    orig_stripe = settings.stripe_secret_key
+    orig_wh = settings.stripe_webhook_secret
+    orig_p = settings.stripe_price_pro
+    orig_t = settings.stripe_price_team
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    try:
+        settings.billing_required = True
+        settings.stripe_secret_key = "sk_test_123"
+        settings.stripe_webhook_secret = "whsec_123"
+        settings.stripe_price_pro = "price_pro_123"
+        settings.stripe_price_team = "price_team_123"
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "z" * 40
+        settings.auth_required = True
+        with TestClient(app) as client:
+            reg = client.post(
+                "/api/auth/password/register",
+                json=_register_json("chandler@syntrix.solutions"),
+            )
+            assert reg.status_code == 200
+            body = reg.json()
+            assert body.get("account_message")
+            assert body.get("user", {}).get("scanner_unlimited") is True
+            assert body.get("user", {}).get("role") == "admin"
+            token = body["access_token"]
+            r = client.post(
+                "/api/scans",
+                json=_base_payload(),
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 200
+            me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+            assert me.status_code == 200
+            mj = me.json()
+            assert mj.get("scanner_unlimited") is True
+            assert mj.get("subscription", {}).get("billing_exempt") is True
+    finally:
+        settings.billing_required = orig_billing
+        settings.stripe_secret_key = orig_stripe
+        settings.stripe_webhook_secret = orig_wh
+        settings.stripe_price_pro = orig_p
+        settings.stripe_price_team = orig_t
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req
+
+
+def test_sole_operator_bypasses_require_authorized_account():
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_gate = settings.require_authorized_account
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    orig_billing = settings.billing_required
+    try:
+        settings.require_authorized_account = True
+        settings.authorized_emails = ""
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "y" * 40
+        settings.auth_required = True
+        settings.billing_required = False
+        with TestClient(app) as client:
+            reg = client.post(
+                "/api/auth/password/register",
+                json=_register_json("chandler@syntrix.solutions"),
+            )
+            assert reg.status_code == 200
+            token = reg.json()["access_token"]
+            checks = client.get(
+                "/api/checks",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert checks.status_code == 200
+    finally:
+        settings.require_authorized_account = orig_gate
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req
+        settings.billing_required = orig_billing
+
+
 def test_scan_ownership_enforced():
     _reset_db()
     app.dependency_overrides = {}
@@ -391,16 +480,14 @@ def test_admin_email_role_in_me():
     orig_pw = settings.password_auth_enabled
     orig_jwt = settings.jwt_secret
     orig_auth_req = settings.auth_required
-    orig_admin = settings.admin_emails
     try:
         settings.password_auth_enabled = True
         settings.jwt_secret = "a" * 40
         settings.auth_required = True
-        settings.admin_emails = "boss@example.com"
         with TestClient(app) as client:
             reg = client.post(
                 "/api/auth/password/register",
-                json=_register_json("boss@example.com"),
+                json=_register_json("chandler@syntrix.solutions"),
             )
             assert reg.status_code == 200
             token = reg.json()["access_token"]
@@ -419,7 +506,6 @@ def test_admin_email_role_in_me():
         settings.password_auth_enabled = orig_pw
         settings.jwt_secret = orig_jwt
         settings.auth_required = orig_auth_req
-        settings.admin_emails = orig_admin
 
 
 def test_profile_names_register_patch_and_png_avatar():
@@ -940,3 +1026,29 @@ def test_admin_set_password_policy_endpoint():
         settings.jwt_secret = orig_jwt
         settings.auth_required = orig_auth_req
         settings.admin_secret = orig_admin
+
+
+def test_canonical_email_for_sub_prefers_password_store():
+    """Admin/billing gates use DB email so a missing JWT ``email`` claim cannot demote the operator."""
+    _reset_db()
+    app.dependency_overrides = {}
+    orig_pw = settings.password_auth_enabled
+    orig_jwt = settings.jwt_secret
+    orig_auth_req = settings.auth_required
+    try:
+        settings.password_auth_enabled = True
+        settings.jwt_secret = "e" * 40
+        settings.auth_required = True
+        with TestClient(app) as client:
+            client.post(
+                "/api/auth/password/register",
+                json=_register_json("chandler@syntrix.solutions"),
+            )
+        sub = store.get_auth_sub_by_email("chandler@syntrix.solutions")
+        assert sub
+        assert store.canonical_email_for_sub(sub, None) == "chandler@syntrix.solutions"
+        assert store.canonical_email_for_sub(sub, "") == "chandler@syntrix.solutions"
+    finally:
+        settings.password_auth_enabled = orig_pw
+        settings.jwt_secret = orig_jwt
+        settings.auth_required = orig_auth_req
