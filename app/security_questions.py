@@ -1,4 +1,8 @@
-"""Fixed list of security questions (indices match API and landing `security-questions.js`)."""
+"""Canned security questions — indices are part of the wire protocol, so don’t reorder lightly.
+
+Must stay byte-for-byte aligned with ``landing/assets/js/security-questions.js`` or new devices will
+look “broken” during signup.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ CANNED_SECURITY_QUESTIONS: List[str] = [
 
 
 def question_text(question_id: int) -> str:
+    """Return the human-readable prompt for a stable question index — OOB for bad ids."""
     if question_id < 0 or question_id >= len(CANNED_SECURITY_QUESTIONS):
         raise ValueError("invalid question id")
     return CANNED_SECURITY_QUESTIONS[question_id]

@@ -1,4 +1,4 @@
-"""Password + JWT helpers.
+"""Password + JWT helpers — the stuff I never want to get wrong twice.
 
 **Passwords** — Stored only as **Argon2id** hashes (passlib). Never SHA-256 or plain SHA for passwords.
 

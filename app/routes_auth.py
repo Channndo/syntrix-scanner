@@ -1,7 +1,7 @@
 """
-Password auth routes (mounted at /api/auth).
+Password auth API — register, login, device trust, profile, the whole boring-but-critical path.
 
-Smoke tests (set API=https://api.syntrix.solutions and a strong password):
+Quick curl cheats (set ``API`` and use a real password):
 
   curl -sS -X POST "$API/api/auth/password/register" -H "Content-Type: application/json" \\
     -d '{"email":"you@example.com","password":"your-password-here"}'

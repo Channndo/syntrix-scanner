@@ -1,11 +1,15 @@
-"""Configuration for Syntrix Scanner."""
+"""Configuration for Syntrix Scanner.
+
+All knobs are env-driven — I got tired of “works on my laptop” deploys. Read ``Settings`` as the
+single source of truth; defaults try to be safe in prod (auth on, billing off until Stripe exists).
+"""
 
 import os
 from typing import List, Optional
 
 
 def _default_sqlite_path() -> str:
-    """Prefer persistent disk on Render when `/data` is mounted (survives redeploys)."""
+    """Pick a SQLite file that survives Render redeploys when ``/data`` disk is mounted."""
     explicit = (os.getenv("SYNTRIX_SQLITE_PATH") or "").strip()
     if explicit:
         return explicit
@@ -15,12 +19,14 @@ def _default_sqlite_path() -> str:
 
 
 def _to_bool(raw: str, default: bool = False) -> bool:
+    """Env truthiness without surprises — only 1/true/yes/on count as True."""
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _float_env(name: str, default: float) -> float:
+    """Parse a float env var; garbage or empty → default so we don’t crash on a typo."""
     try:
         raw = os.getenv(name)
         if raw is None or not str(raw).strip():
@@ -31,6 +37,7 @@ def _float_env(name: str, default: float) -> float:
 
 
 def _optional_int_env(name: str) -> Optional[int]:
+    """Optional int: unset/blank → None; invalid → None (caller decides whether that’s OK)."""
     raw = os.getenv(name, "").strip()
     if not raw:
         return None
@@ -41,6 +48,7 @@ def _optional_int_env(name: str) -> Optional[int]:
 
 
 def _int_env(name: str, default: int) -> int:
+    """Parse int env with fallback — same spirit as ``_float_env``."""
     raw = (os.getenv(name) or "").strip()
     if not raw:
         return default
@@ -51,7 +59,11 @@ def _int_env(name: str, default: int) -> int:
 
 
 class Settings:
-    """Environment-driven config. Override via env vars in deployment."""
+    """
+    Live config snapshot — instantiated at import time from the process environment.
+
+    If you add a field here, document the env name in a comment; future-you greps for ``SYNTRIX_``.
+    """
 
     allowed_origins: List[str] = [
         x.strip()

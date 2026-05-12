@@ -1,6 +1,8 @@
 """
-Check 5 — Permission Scoping
-Inspects the tool catalog for overly broad capabilities.
+Check 5 — Permission scoping (tool catalog reads “god mode”).
+
+We look for scary verbs in tool metadata — not because keywords are perfect, but because attackers
+absolutely grep for them first.
 """
 
 from app.scanner.checks import register_check, CheckContext, CheckOutcome

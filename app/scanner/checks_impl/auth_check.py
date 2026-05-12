@@ -1,6 +1,8 @@
 """
-Check 3 — Authentication
-Verifies the endpoint enforces authentication.
+Check 3 — Authentication enforcement.
+
+If you can hit a sensitive agent surface without credentials, that’s the story — I’m not trying to
+invent drama where the server already did the right thing.
 """
 
 from app.scanner.checks import register_check, CheckContext, CheckOutcome

@@ -1,6 +1,7 @@
 """
-Markdown report formatter for scan results.
-Used by the /api/scans/{id}/report?fmt=markdown endpoint.
+Markdown export for a finished scan — opinionated headings so it pastes cleanly into Notion/email.
+
+Consumed by ``GET /api/scans/{id}/report?fmt=markdown`` — keep output boringly readable, not clever.
 """
 
 from datetime import datetime
@@ -18,6 +19,7 @@ SEV_BADGE = {
 
 
 def to_markdown(scan: Dict[str, Any], findings: List[Dict[str, Any]]) -> str:
+    """Render scan metadata + findings list into one Markdown string for download/share."""
     lines = []
     lines.append(f"# Syntrix Scan Report\n")
     lines.append(f"**Target:** `{scan['target']}`")

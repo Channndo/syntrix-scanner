@@ -1,4 +1,7 @@
-"""Stripe billing integration and subscription authorization helpers."""
+"""Stripe — checkout, portal, webhooks, and “does this user have an active sub?” glue.
+
+I keep Stripe optional until env vars exist so the API can boot in dev without fake card magic.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +18,7 @@ from app.storage import store
 
 
 def validate_billing_config() -> None:
+    """When billing is required, fail loud at startup if Stripe secrets aren’t wired."""
     if not settings.billing_required:
         return
 

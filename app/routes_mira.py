@@ -1,4 +1,9 @@
-"""MIRA assistant — proxies chat to a local or remote Ollama server."""
+"""MIRA HTTP surface — chat proxy to Ollama plus attachment normalization.
+
+The browser never talks to Ollama directly; this module does. I strip sketchy control chars, ignore
+client-injected ``system`` turns, merge uploads into the last user message, and emit ``mira_obs``
+lines for latency/abuse metrics without logging raw prompts.
+"""
 
 from __future__ import annotations
 
@@ -36,7 +41,12 @@ _CLIENT_MESSAGE_ROLES = frozenset({"user", "assistant"})
 
 
 def _sanitize_mira_text(text: str) -> str:
-    """Remove NULs and C0 control chars (keep tab/newline/cr). Does not stop prompt injection."""
+    """
+    Strip NULs and C0 control characters (keep tab/newline/CR).
+
+    This is hygiene, not magic — it won’t stop a determined prompt injection, but it keeps logs and
+    downstream parsers from choking on garbage bytes pasted from a terminal.
+    """
     if not text:
         return ""
     t = text.replace("\x00", "").replace("\ufeff", "")
@@ -46,6 +56,8 @@ def _sanitize_mira_text(text: str) -> str:
 
 
 class MiraChatMessage(BaseModel):
+    """One chat turn from the client — only ``user`` / ``assistant`` are honored (``system`` ignored server-side)."""
+
     model_config = ConfigDict(extra="ignore")
 
     role: Literal["user", "assistant", "system"]
@@ -53,7 +65,7 @@ class MiraChatMessage(BaseModel):
 
 
 class MiraChatAttachment(BaseModel):
-    """One file from the client: UTF-8 text, base64 image, or base64 PDF."""
+    """Single uploaded file — UTF-8 text, base64 image, or base64 PDF depending on ``mime_type``."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -64,6 +76,8 @@ class MiraChatAttachment(BaseModel):
 
 
 class MiraChatBody(BaseModel):
+    """POST /chat JSON — conversation plus optional ``attachments`` merged into the latest user turn."""
+
     model_config = ConfigDict(extra="ignore")
 
     messages: List[MiraChatMessage] = Field(..., min_length=1, max_length=48)
@@ -71,11 +85,15 @@ class MiraChatBody(BaseModel):
 
 
 class MiraChatResponse(BaseModel):
+    """What the UI renders — assistant text plus the model name Ollama actually used."""
+
     message: str
     model: str
 
 
 class MiraStatusResponse(BaseModel):
+    """Public health-ish payload for the marketing site to decide whether to show MIRA."""
+
     enabled: bool
     model: str
     base_url: str
@@ -84,6 +102,7 @@ class MiraStatusResponse(BaseModel):
 
 
 def _require_mira_enabled() -> None:
+    """503 if SYNTRIX_MIRA_ENABLED is off — keeps misconfigured deploys from silently burning Ollama."""
     if not settings.mira_enabled:
         raise HTTPException(
             status_code=503,
@@ -93,7 +112,11 @@ def _require_mira_enabled() -> None:
 
 @router.get("/status", response_model=MiraStatusResponse)
 def mira_status():
-    """Public: lets the landing page hide or soften UI when MIRA is off."""
+    """
+    Lightweight status for the landing page — model name, whether MIRA is on, redacted Ollama base.
+
+    ``git_commit`` is there so I can prove Render picked up the build I think it picked up.
+    """
     commit = (os.getenv("RENDER_GIT_COMMIT") or "").strip() or None
     return MiraStatusResponse(
         enabled=bool(settings.mira_enabled),
@@ -104,7 +127,7 @@ def mira_status():
 
 
 def _safe_public_base(url: str) -> str:
-    """Avoid leaking credentials in host string (best-effort)."""
+    """Strip userinfo from URLs before we echo ``base_url`` to browsers — no leaked creds in JSON."""
     u = (url or "").strip().rstrip("/")
     if "@" in u.split("://", 1)[-1]:
         return "(redacted)"
@@ -133,6 +156,7 @@ _TEXT_MIMES = frozenset(
 
 
 def _strip_data_url_b64(data: str) -> str:
+    """Pull raw base64 out of a ``data:image/png;base64,...`` paste — browsers love that format."""
     s = (data or "").strip()
     if s.startswith("data:") and "," in s:
         return s.split(",", 1)[1].strip()
@@ -161,6 +185,11 @@ def _mime_textish(mime: str, filename: str) -> bool:
 
 
 def _extract_pdf_text(raw: bytes, max_chars: int = 120_000) -> str:
+    """
+    Best-effort PDF text extraction for MIRA attachments — pypdf, capped pages/chars.
+
+    If a PDF is basically screenshots, you’ll get empty text; that’s a content problem, not a bug.
+    """
     try:
         reader = PdfReader(BytesIO(raw))
     except Exception:
@@ -182,7 +211,11 @@ def _extract_pdf_text(raw: bytes, max_chars: int = 120_000) -> str:
 def merge_mira_attachments(
     attachments: List[MiraChatAttachment],
 ) -> Tuple[str, List[str], int, Dict[str, int]]:
-    """Build extra user text plus up to four base64 images for Ollama."""
+    """
+    Turn uploads into (a) extra user text, (b) image base64 list for Ollama vision, (c) size/count stats.
+
+    Raises ``HTTPException(400)`` on unsupported types — I’d rather be explicit than silently drop files.
+    """
     extra_parts: List[str] = []
     images: List[str] = []
     raw_byte_budget = 0
@@ -291,6 +324,7 @@ def merge_mira_attachments(
 
 
 def _last_user_message_index(messages: List[MiraChatMessage]) -> Optional[int]:
+    """Index of the last ``user`` turn — attachments merge there so history stays sane."""
     for i in range(len(messages) - 1, -1, -1):
         if messages[i].role == "user":
             return i
@@ -298,6 +332,7 @@ def _last_user_message_index(messages: List[MiraChatMessage]) -> Optional[int]:
 
 
 def _last_user_text(messages: List[MiraChatMessage]) -> str:
+    """Latest user message text (for memory append) — ignores assistant turns after it."""
     for m in reversed(messages):
         if m.role == "user":
             return _sanitize_mira_text(m.content).strip()
@@ -305,6 +340,7 @@ def _last_user_text(messages: List[MiraChatMessage]) -> str:
 
 
 def _system_prompt_for_user(user: Optional[AuthenticatedUser]) -> str:
+    """Base MIRA prompt, optionally with SQLite-backed memory for signed-in users."""
     if not user:
         return MIRA_SYSTEM_PROMPT
     memory = store.get_mira_user_memory(user.sub).strip()
@@ -329,10 +365,10 @@ async def _ollama_chat_stream_aggregate(
     request_id: str = "",
 ) -> Tuple[str, str, Dict[str, Any]]:
     """
-    Ollama /api/chat with stream=true. httpx read timeout is *per idle gap between chunks*; a long
-    time-to-first-token on non-streaming POST counts as one read and trips MIRA on CPU hosts.
-    We disable per-read timeout on the stream and cap total wall time with asyncio.wait_for.
-    Returns upstream timing metrics for observability (no prompt/body content logged).
+    Stream Ollama ``/api/chat`` and stitch assistant ``message.content`` chunks into one reply.
+
+    httpx ``read`` timeout is idle-gap based, so we lean on ``asyncio.wait_for`` for a hard wall clock.
+    Side channel: fill ``first_token_ms`` / ``upstream_wall_ms`` for ``mira_obs`` — still zero prompt logging.
     """
     payload = {**body, "stream": True}
     state: Dict[str, Any] = {"model": model_fallback, "parts": []}
@@ -418,11 +454,10 @@ async def mira_chat(
     user: Optional[AuthenticatedUser] = Depends(optional_user),
 ):
     """
-    Chat via Ollama `/api/chat`. Open to anonymous users; optional Bearer JWT for per-user memory.
-    Configure OLLAMA_BASE_URL and OLLAMA_MODEL on the API host.
+    Public chat endpoint — optional JWT for MIRA memory, anonymous otherwise.
 
-    Optional `attachments` (max 10) are merged into the latest user turn: UTF-8 text and extracted
-    PDF text become prompt context; images are passed as base64 to Ollama when the model supports vision.
+    Flow: rate limit → normalize attachments → build Ollama messages (server-owned system prompt) →
+    stream model → persist memory for signed-in users → emit ``mira_obs`` success line.
     """
     _require_mira_enabled()
     request_id = uuid.uuid4().hex[:16]

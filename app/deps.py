@@ -1,4 +1,9 @@
-"""Bearer JWT verification — password (HS256) tokens only."""
+"""
+Who’s calling the API — password JWTs only (HS256), no social-login maze.
+
+FastAPI dependencies live here: ``require_user`` for “must be logged in”, ``optional_user`` for
+“JWT if you have one, otherwise anonymous”. Keeps route handlers dumb and consistent.
+"""
 
 from __future__ import annotations
 
@@ -20,19 +25,22 @@ _bearer = HTTPBearer(auto_error=False)
 
 @dataclass
 class AuthenticatedUser:
+    """Decoded JWT identity — ``sub`` is stable; ``email`` may be None on older tokens."""
+
     sub: str
     email: Optional[str]
     raw_claims: Dict[str, Any]
 
 
 def validate_password_auth_config() -> None:
+    """If password auth is on, make sure we actually have a signing secret worth using."""
     if not settings.password_auth_enabled:
         return
     ensure_jwt_secret()
 
 
 def validate_auth_config() -> None:
-    """Startup validation for auth-related settings."""
+    """Boot-time sanity: password stack + “auth required” flag can’t contradict each other silently."""
     validate_password_auth_config()
     if settings.auth_required and not settings.password_auth_enabled:
         logger.warning(
@@ -42,6 +50,7 @@ def validate_auth_config() -> None:
 
 
 def _decode_password_bearer(token: str) -> Optional[Dict[str, Any]]:
+    """Try to parse a Bearer token as our HS256 access JWT; bad/expired → None (no exception leak)."""
     if not settings.password_auth_enabled:
         return None
     try:
@@ -53,6 +62,11 @@ def _decode_password_bearer(token: str) -> Optional[Dict[str, Any]]:
 def require_user(
     creds: HTTPAuthorizationCredentials = Depends(_bearer),
 ) -> AuthenticatedUser:
+    """
+    Hard gate: valid Bearer JWT or 401.
+
+    When ``SYNTRIX_AUTH_REQUIRED`` is off (local dev), I fake a dev user so routes still run.
+    """
     if not settings.auth_required:
         return AuthenticatedUser(sub="dev-local-user", email="dev@syntrix.local", raw_claims={})
 
@@ -79,7 +93,11 @@ def require_user(
 def optional_user(
     creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
 ) -> Optional[AuthenticatedUser]:
-    """Valid Bearer JWT → user; missing or invalid token → None (anonymous)."""
+    """
+    Soft gate: JWT wins if it’s legit; otherwise None so MIRA (and friends) can stay public.
+
+    MIRA uses this so signed-in folks get memory without forcing login for everyone.
+    """
     if not creds or not creds.credentials:
         return None
     if not settings.password_auth_enabled:

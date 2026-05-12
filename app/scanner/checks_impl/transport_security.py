@@ -1,6 +1,7 @@
 """
-Check 2 — Transport Security
-Verifies TLS, HSTS, and refuses plaintext HTTP for any non-loopback target.
+Check 2 — Transport security (TLS, HSTS, no sneaky plaintext).
+
+If it’s not loopback, I want HTTPS end-to-end — this is table stakes for anything internet-facing.
 """
 
 from urllib.parse import urlparse

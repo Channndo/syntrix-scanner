@@ -1,4 +1,10 @@
-"""Simple per-IP rate limiting for login/register endpoints."""
+"""
+Cheap per-IP throttles — in-memory, process-local.
+
+Good enough for v1 on a single Render instance: stops brute-force on auth and stops someone from
+hammering MIRA into your Ollama bill. If we ever horizontally scale, this becomes “per box” unless
+we graduate to Redis — that’s a known tradeoff, not a surprise.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +26,7 @@ _MIRA_RATE_HITS: Dict[str, List[float]] = {}
 
 
 def client_ip(request: Request) -> str:
+    """Best-effort client IP: honor ``X-Forwarded-For`` (Render/proxies) then fall back to socket."""
     ff = (request.headers.get("x-forwarded-for") or "").strip()
     if ff:
         return ff.split(",")[0].strip()
@@ -29,6 +36,7 @@ def client_ip(request: Request) -> str:
 
 
 def rate_limit_or_429(ip: str) -> None:
+    """Login/register throttle — sliding 60s window, shared across those routes."""
     now = time.monotonic()
     with _RATE_LOCK:
         hits = _RATE_HITS.setdefault(ip, [])
@@ -44,7 +52,11 @@ def rate_limit_or_429(ip: str) -> None:
 
 
 def mira_rate_limit_or_429(ip: str, max_requests: int, window_sec: float) -> None:
-    """Sliding-window limiter for MIRA /chat only (does not share the auth bucket)."""
+    """
+    MIRA-only bucket — separate from auth so a noisy chat user doesn’t lock themselves out of login.
+
+    Emits ``mira_rate_limited`` via ``mira_obs`` right before the 429 so ops can graph abuse.
+    """
     if max_requests <= 0 or window_sec <= 0:
         return
     now = time.monotonic()

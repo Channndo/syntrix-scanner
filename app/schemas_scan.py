@@ -1,4 +1,4 @@
-"""Shared request/response models for scan submission and status."""
+"""Pydantic shapes for scan submit/status — keeps OpenAPI honest and routes skinny."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field, HttpUrl
 
 
 class ScanSubmit(BaseModel):
+    """What the UI POSTs to start a scan — target, depth, optional upstream auth header."""
+
     target_url: HttpUrl = Field(..., description="MCP server URL or agent endpoint")
     scan_type: Literal["mcp", "agent_endpoint", "tunnel"] = "mcp"
     depth: Literal["quick", "standard", "deep"] = "standard"
@@ -17,6 +19,8 @@ class ScanSubmit(BaseModel):
 
 
 class ScanSubmitResponse(BaseModel):
+    """Immediate ACK after enqueue — client polls status with ``scan_id``."""
+
     scan_id: str
     status: str
     target: str
@@ -25,6 +29,8 @@ class ScanSubmitResponse(BaseModel):
 
 
 class ScanStatusResponse(BaseModel):
+    """What the poll endpoint returns while a scan is moving through life."""
+
     scan_id: str
     status: Literal["queued", "running", "complete", "failed"]
     target: str
@@ -37,10 +43,14 @@ class ScanStatusResponse(BaseModel):
 
 
 class GuestScanSubmit(ScanSubmit):
+    """Guest flow — same scan fields plus a stable browser id for rate limits / polling."""
+
     guest_client_id: str = Field(..., max_length=64, description="Stable UUID from browser storage")
 
 
 class GuestScanResponse(BaseModel):
+    """Guest enqueue response — includes ``poll_token`` so randos can’t scrape others’ scans."""
+
     scan_id: str
     status: str
     target: str

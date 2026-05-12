@@ -1,6 +1,7 @@
 """
-Check 4 — Tool Description Injection
-Detects adversarial content in MCP tool descriptions that could hijack agent behavior.
+Check 4 — Tool description injection (hostile text hiding in MCP tool blurbs).
+
+Agents trust these strings more than they should — if the catalog is poisoned, the agent is already halfway owned.
 """
 
 import re

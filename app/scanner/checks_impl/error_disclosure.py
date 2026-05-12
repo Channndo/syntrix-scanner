@@ -1,6 +1,7 @@
 """
-Check 9 — Error / Information Disclosure
-Triggers error paths and looks for sensitive details in responses.
+Check 9 — Error / info disclosure (stack traces, paths, “oops” blobs).
+
+Attackers love verbose errors more than users do — we poke sad paths and see if the server overshares.
 """
 
 import re

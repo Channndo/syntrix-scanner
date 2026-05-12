@@ -1,6 +1,7 @@
 """
-Check 8 — Rate Limiting
-Sends a small burst of requests and looks for evidence of rate limiting.
+Check 8 — Rate limiting (tiny burst, look for throttling signals).
+
+If I can hammer you from a single IP without friction, your users (and your bill) will too.
 """
 
 import asyncio

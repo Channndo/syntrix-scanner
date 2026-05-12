@@ -1,6 +1,7 @@
 """
-Check 7 — Sampling Abuse
-Detects MCP servers that advertise sampling capability without rate limits.
+Check 7 — Sampling abuse surface (MCP “try harder / more tokens” knobs without guardrails).
+
+Unbounded sampling on a public MCP is a cost + abuse magnet — we call that out when it looks real.
 """
 
 import json

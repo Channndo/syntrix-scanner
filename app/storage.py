@@ -1,5 +1,8 @@
 """
-Storage layer — sqlite-backed for account, subscription, and scan ownership.
+Storage layer — SQLite is the whole product database for v1.
+
+Users, password hashes, subscriptions, scans, findings, waitlist, MIRA memory — it all lands here.
+I use lightweight migrations (``ALTER TABLE`` guards) so older DB files on disk don’t brick startup.
 """
 
 from __future__ import annotations
@@ -19,6 +22,8 @@ from app.config import settings
 
 
 def _to_iso(value: Optional[datetime]) -> Optional[str]:
+    """UTC-normalize datetimes before we stuff them into SQLite text columns."""
+
     if value is None:
         return None
     if value.tzinfo is None:
@@ -27,13 +32,17 @@ def _to_iso(value: Optional[datetime]) -> Optional[str]:
 
 
 def _from_iso(value: Optional[str]) -> Optional[datetime]:
+    """Parse ISO strings back out of rows — ``None`` in, ``None`` out."""
     if not value:
         return None
     return datetime.fromisoformat(value)
 
 
 class _SQLiteStore:
+    """Private implementation — ``store`` at module bottom is what the app imports."""
+
     def __init__(self):
+        """Open (or create) the DB file, mkdir parents, run schema + idempotent column migrations."""
         path = settings.sqlite_path
         parent = os.path.dirname(os.path.abspath(path))
         if parent:
@@ -44,6 +53,7 @@ class _SQLiteStore:
         self._init_db()
 
     def _init_db(self) -> None:
+        """Bootstrap tables + indexes — safe to run every process start thanks to ``IF NOT EXISTS``."""
         with self._lock, self._conn:
             self._conn.executescript(
                 """
@@ -126,6 +136,7 @@ class _SQLiteStore:
         self._ensure_mira_user_memory_table()
 
     def _ensure_mira_user_memory_table(self) -> None:
+        """Per-user rolling transcript bucket for signed-in MIRA — separate from raw JWT claims."""
         with self._lock, self._conn:
             self._conn.execute(
                 """
@@ -139,6 +150,7 @@ class _SQLiteStore:
             )
 
     def get_mira_user_memory(self, auth_sub: str) -> str:
+        """Fetch the stitched memory blob we prepend to MIRA’s system prompt for this user."""
         with self._lock:
             row = self._conn.execute(
                 "SELECT memory_text FROM mira_user_memory WHERE auth_sub = ?",
@@ -156,7 +168,11 @@ class _SQLiteStore:
         *,
         max_chars: int = 12000,
     ) -> None:
-        """Rolling transcript for signed-in users; trimmed from the start when over max_chars."""
+        """
+        Append a trimmed Q/A pair to the user’s rolling MIRA memory.
+
+        Caps keep one chatty session from bloating prompts — oldest text falls off the front first.
+        """
         u = (user_text or "").strip()[:2000]
         a = (assistant_text or "").strip()[:4000]
         chunk = f"User: {u}\nAssistant: {a}\n\n"
@@ -843,7 +859,7 @@ class _SQLiteStore:
 
 
 class UserStore:
-    """Email/password users — threading.Lock matches sqlite store pattern."""
+    """Auth-facing façade over ``_SQLiteStore`` — keeps password routes readable."""
 
     def __init__(self, inner: "_SQLiteStore"):
         self._db = inner
@@ -931,4 +947,5 @@ class UserStore:
         self._db.ensure_user(user_sub, email.strip().lower())
 
 
+# Process-wide singleton — import ``store`` from routes; don’t instantiate ``_SQLiteStore`` everywhere.
 store = _SQLiteStore()

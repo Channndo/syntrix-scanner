@@ -1,8 +1,8 @@
 """
-Check 1 — Network Exposure
-Detects MCP servers / agent endpoints exposed on public addresses without
-authentication. Only flags Critical when response actually looks like an
-MCP/agent surface — not generic websites.
+Check 1 — Network exposure (MCP / agent surfaces on the public internet).
+
+I only yell “critical” when the response actually smells like MCP — not when someone pointed us at
+a random marketing site. Generic sites shouldn’t pollute the report.
 """
 
 import re

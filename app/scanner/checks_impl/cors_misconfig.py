@@ -1,6 +1,7 @@
 """
-Check 10 — CORS Misconfiguration
-Detects wildcard or reflected CORS combined with allow-credentials.
+Check 10 — CORS done wrong (wildcards + credentials, reflected origins, that whole family).
+
+Browsers enforce this stuff — I’m just making sure your agent endpoint isn’t an accidental cookie thief.
 """
 
 from app.scanner.checks import register_check, CheckContext, CheckOutcome

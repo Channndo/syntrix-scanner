@@ -1,4 +1,9 @@
-"""Account-level authorization (who may use the product beyond having a valid JWT)."""
+"""
+Beyond “has a JWT” — who’s actually allowed to burn scan quota / hit paid surfaces.
+
+Stripe + admin approval flip the ``authorized`` flag in SQLite; these deps enforce that policy
+so we’re not confusing “signed up” with “good to go”.
+"""
 
 from __future__ import annotations
 
@@ -13,9 +18,10 @@ from app.storage import store
 
 def require_authorized_account(user: AuthenticatedUser = Depends(require_user)) -> AuthenticatedUser:
     """
-    When SYNTRIX_REQUIRE_AUTHORIZED_ACCOUNT=true, only users with users.authorized=1
-    may call routes protected by this dependency. Stripe active subscriptions and
-    admin approval set the flag; see /api/auth/me.
+    Subscription/admin gate: when ``SYNTRIX_REQUIRE_AUTHORIZED_ACCOUNT`` is on, ``users.authorized``
+    must be 1 or you get a clear 403 (not a cryptic scan failure later).
+
+    Flag is set by Stripe webhooks or an admin bearer call — see ``GET /api/auth/me`` for state.
     """
     if not settings.require_authorized_account:
         return user
@@ -29,6 +35,11 @@ def require_authorized_account(user: AuthenticatedUser = Depends(require_user)) 
 
 
 def require_admin_bearer(request: Request) -> None:
+    """
+    Shared secret admin API — ``Authorization: Bearer <SYNTRIX_ADMIN_SECRET>`` or we pretend route doesn’t exist.
+
+    I return 404 when the secret isn’t configured so scanners don’t get a free “admin exists” probe.
+    """
     expected = (settings.admin_secret or "").strip()
     if not expected:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")

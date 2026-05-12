@@ -1,7 +1,8 @@
 """
-Check 6 — Active Prompt Injection Probe
-Sends a canary payload through the agent's input surface and looks for
-evidence the canary was reflected back unsanitized.
+Check 6 — Active prompt-injection probe (canary in, garbage reflected back out).
+
+This is a blunt instrument — it won’t catch every clever jailbreak, but it catches the “echo my
+payload” class of failures that still show up in the wild.
 """
 
 import secrets

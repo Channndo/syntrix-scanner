@@ -1,9 +1,8 @@
 """
-Check framework for Syntrix Scanner.
+Check framework — each probe is a small async function registered with ``@register_check``.
 
-A Check is a self-contained probe against a target. Each check returns
-zero or more CheckOutcomes (findings). Checks register themselves via
-@register_check decorator and are auto-loaded.
+I wanted adding a new check to feel like dropping a file in ``checks_impl/`` and importing it here,
+not editing a central switch statement nobody owns.
 """
 
 from dataclasses import dataclass, field
@@ -13,6 +12,8 @@ import httpx
 
 @dataclass
 class CheckContext:
+    """Shared probe context — one httpx client, one target, optional caller auth header."""
+
     target: str
     scan_type: str
     depth: str
@@ -22,6 +23,8 @@ class CheckContext:
 
 @dataclass
 class CheckOutcome:
+    """One finding row — what the UI renders; keep evidence short enough to read."""
+
     check_id: str
     title: str
     severity: str  # critical|high|medium|low|info
@@ -34,6 +37,8 @@ class CheckOutcome:
 
 @dataclass
 class Check:
+    """Registered probe metadata + the coroutine that actually runs."""
+
     id: str
     name: str
     category: str
@@ -44,6 +49,7 @@ class Check:
     run_fn: Optional[Callable] = None
 
     async def run(self, ctx: CheckContext) -> List[CheckOutcome]:
+        """Dispatch to the underlying probe function — no function means no-op."""
         if not self.run_fn:
             return []
         result = await self.run_fn(ctx)
@@ -62,7 +68,7 @@ def register_check(
     check_type: str = "static",
     applies_to: Optional[List[str]] = None,
 ):
-    """Decorator: registers a check function under metadata."""
+    """Decorator — appends this check to ``REGISTERED_CHECKS`` at import time."""
     def decorator(fn):
         REGISTERED_CHECKS.append(Check(
             id=id, name=name, category=category,

@@ -1,4 +1,10 @@
-"""System prompt for MIRA — Syntrix in-app cybersecurity assistant (Ollama-backed)."""
+"""
+The actual system prompt we inject server-side for MIRA.
+
+Worth saying explicitly: the browser never wins a fight over this string — we ignore client “system”
+messages so someone can’t paste “ignore previous instructions” next to our policy. The model still
+sees user text as untrusted; that’s called out inside the prompt below.
+"""
 
 MIRA_SYSTEM_PROMPT = """You are **MIRA** (Machine Intelligence & Risk Advisor), the in-product assistant for **Syntrix** — security scanning for MCP servers, AI agents, and agentic deployments.
 

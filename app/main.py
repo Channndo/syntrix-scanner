@@ -1,6 +1,9 @@
 """
-Syntrix Scanner — FastAPI backend
-Automated security scanner for MCP servers and agentic AI deployments.
+Syntrix Scanner — FastAPI backend.
+
+This is the public API: scans, auth, billing webhooks, MIRA proxy, admin helpers. I keep heavy work
+off the request thread (background scans) and push config warnings to startup so deploys fail loud
+instead of silently rotting user data on ephemeral disks.
 
 Run locally:
     pip install -r requirements.txt
@@ -64,7 +67,7 @@ app.include_router(mira_router, prefix="/api/mira")
 
 @app.get("/api/mira", tags=["mira"])
 def mira_service_index():
-    """Public index so deployments can verify the MIRA subtree is mounted (use GET /api/mira/status)."""
+    """Cheap discovery JSON — proves the MIRA router is mounted without waking Ollama."""
     return {
         "service": "mira",
         "paths": {
@@ -110,6 +113,7 @@ class WaitlistIngestPayload(BaseModel):
 
 @app.get("/")
 def root():
+    """Tiny JSON index — load balancers and humans can sanity-check the deploy without auth."""
     out = {
         "service": "syntrix-scanner",
         "version": "0.1.0",
@@ -125,6 +129,7 @@ def root():
 
 @app.get("/health")
 def health():
+    """Liveness for orchestrators — no side effects, no DB."""
     return {"status": "ok", "ts": datetime.now(timezone.utc).isoformat()}
 
 
@@ -256,6 +261,7 @@ async def submit_scan(
     bg: BackgroundTasks,
     user: AuthenticatedUser = Depends(require_active_subscription),
 ):
+    """Queue a paid scan — persists row then kicks ``run_scan_background`` so HTTP returns fast."""
     scan_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
     estimates = {"quick": 30, "standard": 90, "deep": 300}
@@ -290,6 +296,7 @@ async def submit_scan(
 
 @app.get("/api/scans/{scan_id}", response_model=ScanStatusResponse)
 def get_scan(scan_id: str, user: AuthenticatedUser = Depends(require_authorized_account)):
+    """Owner-only scan status — 404 if unknown, 403 if it isn’t yours."""
     scan = store.get_scan(scan_id)
     if not scan:
         raise HTTPException(404, f"Scan {scan_id} not found")
@@ -300,6 +307,7 @@ def get_scan(scan_id: str, user: AuthenticatedUser = Depends(require_authorized_
 
 @app.get("/api/scans/{scan_id}/findings")
 def get_findings(scan_id: str, user: AuthenticatedUser = Depends(require_authorized_account)):
+    """Findings + summary blob for the UI once a scan has produced data."""
     scan = store.get_scan(scan_id)
     if not scan:
         raise HTTPException(404, f"Scan {scan_id} not found")
@@ -318,6 +326,7 @@ def get_report(
     fmt: Literal["json", "markdown"] = "json",
     user: AuthenticatedUser = Depends(require_authorized_account),
 ):
+    """Export finished scan — JSON for machines, Markdown when someone wants a shareable read."""
     scan = store.get_scan(scan_id)
     if not scan:
         raise HTTPException(404, f"Scan {scan_id} not found")
@@ -339,6 +348,7 @@ def create_checkout(
     payload: CheckoutSessionRequest,
     user: AuthenticatedUser = Depends(require_user),
 ):
+    """Stripe Checkout handoff — we only need a price id and a logged-in user row."""
     store.ensure_user(user.sub, email=user.email)
     price_id = settings.stripe_price_pro if payload.plan == "pro" else settings.stripe_price_team
     if not price_id:
@@ -348,12 +358,14 @@ def create_checkout(
 
 @app.post("/api/billing/portal-session")
 def create_portal(user: AuthenticatedUser = Depends(require_user)):
+    """Stripe Customer Portal — cancel card, download invoices, that kind of adult stuff."""
     store.ensure_user(user.sub, email=user.email)
     return create_billing_portal_session(user)
 
 
 @app.post("/api/billing/webhook")
 async def billing_webhook(request: Request):
+    """Stripe webhook sink — signature-verified inside ``billing.handle_stripe_webhook``."""
     return await handle_stripe_webhook(request)
 
 
@@ -362,6 +374,7 @@ async def billing_webhook(request: Request):
 
 @app.on_event("startup")
 def _validate_startup_config():
+    """Fail fast-ish: JWT secret, auth flags, billing env — plus the Render SQLite footgun warning."""
     if settings.password_auth_enabled:
         ensure_jwt_secret()
     validate_auth_config()

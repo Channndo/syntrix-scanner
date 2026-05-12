@@ -1,6 +1,8 @@
 """
-Syntrix scan engine.
-Coordinates check execution, applies scoring, returns aggregated results.
+Scan engine — the conductor.
+
+Pulls the registered checks, respects depth + scan_type filters, caps concurrency, and turns raw
+outcomes into a risk score humans can argue about over coffee.
 """
 
 from dataclasses import dataclass, field
@@ -15,6 +17,8 @@ from app.scanner.checks import REGISTERED_CHECKS, Check, CheckContext, CheckOutc
 
 @dataclass
 class ScanRequest:
+    """One runnable scan job — everything ``ScanEngine.run`` needs beyond DB metadata."""
+
     scan_id: str
     target: str
     scan_type: str  # mcp | agent_endpoint | tunnel
@@ -24,6 +28,8 @@ class ScanRequest:
 
 @dataclass
 class ScanResult:
+    """What we hand back to storage after a run — findings list + composite score."""
+
     findings: List[Dict[str, Any]] = field(default_factory=list)
     risk_score: int = 0
     risk_tier: str = "Low"
@@ -34,6 +40,7 @@ SEV_DEDUCTION = {"critical": 25, "high": 15, "medium": 7, "low": 3, "info": 0}
 
 
 def _score_to_tier(score: int) -> str:
+    """Bucket the 0–100 score into a word humans print on slide decks."""
     if score < 50:
         return "Critical"
     if score < 70:
@@ -44,7 +51,11 @@ def _score_to_tier(score: int) -> str:
 
 
 def _is_target_allowed(target: str) -> bool:
-    """Block scans against forbidden internal/cloud-metadata targets."""
+    """
+    Safety rail: no cloud metadata URLs, no loopback, unless you explicitly flipped localhost on.
+
+    I’d rather reject a bad target up front than accidentally help someone SSRF their own infra.
+    """
     parsed = urlparse(target)
     host = (parsed.hostname or "").lower()
     if not host:
@@ -58,7 +69,11 @@ def _is_target_allowed(target: str) -> bool:
 
 
 class ScanEngine:
-    """Runs a sequence of checks against a target and aggregates findings."""
+    """
+    Runs checks concurrently (bounded), merges outcomes, scores risk.
+
+    This is where “depth” actually means something — quick runs skip the expensive stuff.
+    """
 
     def __init__(self):
         self.timeout = settings.probe_timeout_seconds
@@ -68,6 +83,7 @@ class ScanEngine:
         req: ScanRequest,
         on_progress: Optional[Callable[[int], None]] = None,
     ) -> ScanResult:
+        """Main entry: validate target, fan out checks, aggregate, score."""
         if not _is_target_allowed(req.target):
             return ScanResult(
                 findings=[{
@@ -145,6 +161,7 @@ class ScanEngine:
         return result
 
     def _select_checks(self, depth: str, scan_type: str) -> List[Check]:
+        """Filter registered checks by scan type; ``quick`` skips dynamic probes to save time."""
         relevant = [c for c in REGISTERED_CHECKS if scan_type in c.applies_to]
         if depth == "quick":
             return [c for c in relevant if c.check_type == "static"]

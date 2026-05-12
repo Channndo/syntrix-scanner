@@ -1,7 +1,8 @@
 """
-Anonymous guest scans — no login. One scan per guest_client_id per UTC day (configurable).
+Guest scans — try-before-buy without accounts.
 
-Landing calls POST /api/public/scans/guest; polling uses poll_token on GET routes below.
+Hard limits per ``guest_client_id`` + UTC day so we’re not an open proxy for the whole internet.
+Landing hits ``POST /api/public/scans/guest``; polling uses the opaque ``poll_token``.
 """
 
 from __future__ import annotations
