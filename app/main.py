@@ -13,6 +13,7 @@ Run locally:
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
 from datetime import datetime, timezone
@@ -39,8 +40,10 @@ from app.config import settings
 from app.routes_auth import router as auth_router
 from app.routes_guest import router as guest_router
 from app.routes_mira import router as mira_router
+from app.routes_team import router as team_router
 from app.schemas_scan import ScanSubmit, ScanSubmitResponse, ScanStatusResponse
 from app.scan_runner import run_scan_background
+from app.security_middleware import MiraBodySizeLimitMiddleware, SecurityHeadersMiddleware
 
 _doc_base = "/docs" if settings.api_docs_enabled else None
 app = FastAPI(
@@ -52,17 +55,25 @@ app = FastAPI(
     openapi_url=("/openapi.json" if settings.api_docs_enabled else None),
 )
 
+_trusted = [h.strip() for h in (os.getenv("SYNTRIX_TRUSTED_HOSTS") or "").split(",") if h.strip()]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
+
+app.add_middleware(MiraBodySizeLimitMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+if _trusted:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_trusted)
 
 app.include_router(auth_router, prefix="/api/auth")
 app.include_router(guest_router)
 app.include_router(mira_router, prefix="/api/mira")
+app.include_router(team_router, prefix="/api/team")
 
 
 @app.get("/api/mira", tags=["mira"])
@@ -249,6 +260,8 @@ def list_checks(_: AuthenticatedUser = Depends(require_authorized_account)):
                 "owasp_mapping": c.owasp_mapping,
                 "severity_max": c.severity_max,
                 "type": c.check_type,
+                "applies_to": list(c.applies_to),
+                "methodology": c.methodology or "",
             }
             for c in REGISTERED_CHECKS
         ],

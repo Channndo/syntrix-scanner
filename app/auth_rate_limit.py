@@ -14,6 +14,7 @@ from typing import Dict, List
 
 from fastapi import HTTPException, Request, status
 
+from app.config import settings
 from app.mira_obs import mira_obs
 
 _RATE_LOCK = threading.Lock()
@@ -23,6 +24,10 @@ _RATE_MAX_REQUESTS = 25
 
 _MIRA_RATE_LOCK = threading.Lock()
 _MIRA_RATE_HITS: Dict[str, List[float]] = {}
+
+_GUEST_SUBMIT_LOCK = threading.Lock()
+_GUEST_SUBMIT_HITS: Dict[str, List[float]] = {}
+_GUEST_SUBMIT_WINDOW_SEC = 3600.0
 
 
 def client_ip(request: Request) -> str:
@@ -47,6 +52,23 @@ def rate_limit_or_429(ip: str) -> None:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Too many attempts. Try again shortly.",
+            )
+        hits.append(now)
+
+
+def guest_scan_submit_rate_limit_or_429(ip: str) -> None:
+    """Throttle anonymous guest scan submissions per IP — complements per-guest_id daily quota."""
+    cap = max(1, int(settings.guest_scan_ip_max_per_hour))
+    now = time.monotonic()
+    with _GUEST_SUBMIT_LOCK:
+        hits = _GUEST_SUBMIT_HITS.setdefault(ip, [])
+        cutoff = now - _GUEST_SUBMIT_WINDOW_SEC
+        while hits and hits[0] < cutoff:
+            hits.pop(0)
+        if len(hits) >= cap:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many guest scan attempts from this network. Try again later or sign in.",
             )
         hits.append(now)
 

@@ -105,6 +105,7 @@ class ScanEngine:
 
         async with httpx.AsyncClient(
             timeout=self.timeout,
+            limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
             headers={"User-Agent": settings.probe_user_agent},
             follow_redirects=True,
             verify=True,

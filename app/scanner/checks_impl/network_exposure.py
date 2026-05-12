@@ -61,6 +61,10 @@ async def _probe_mcp_paths(ctx: CheckContext) -> tuple[bool, str]:
     owasp_mapping="ASI06",
     severity_max="critical",
     check_type="static",
+    methodology=(
+        "Heuristic response inspection for tunnel markers (e.g. ngrok, Cloudflare quick tunnels) "
+        "and broad-bind patterns in returned content."
+    ),
 )
 async def check_network_exposure(ctx: CheckContext):
     out = []

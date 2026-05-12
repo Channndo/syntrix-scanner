@@ -27,6 +27,10 @@ RISKY_KEYWORDS = {
     severity_max="high",
     check_type="dynamic",
     applies_to=["mcp"],
+    methodology=(
+        "Inspects declared tool schemas/capabilities for overly broad patterns (e.g. unconstrained "
+        "paths or missing scope hints) when the endpoint exposes tool metadata."
+    ),
 )
 async def check_permissions(ctx: CheckContext):
     out = []

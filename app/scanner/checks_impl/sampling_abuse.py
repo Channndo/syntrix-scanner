@@ -16,6 +16,10 @@ from app.scanner.checks import register_check, CheckContext, CheckOutcome
     severity_max="medium",
     check_type="dynamic",
     applies_to=["mcp"],
+    methodology=(
+        "MCP initialize-style probe for sampling capability flags combined with follow-up "
+        "requests to see if sampling channels are exposed without guardrails."
+    ),
 )
 async def check_sampling(ctx: CheckContext):
     out = []

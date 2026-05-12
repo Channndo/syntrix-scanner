@@ -18,6 +18,10 @@ BURST_SIZE = 12
     owasp_mapping="ASI10",
     severity_max="medium",
     check_type="dynamic",
+    methodology=(
+        "Issues a small burst of lightweight requests; inspects status codes and headers for "
+        "throttling signals (429, Retry-After, rate-limit headers)."
+    ),
 )
 async def check_rate_limit(ctx: CheckContext):
     out = []

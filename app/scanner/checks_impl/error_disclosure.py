@@ -50,6 +50,10 @@ async def _trigger_errors(ctx: CheckContext):
     owasp_mapping="ASI02",
     severity_max="medium",
     check_type="dynamic",
+    methodology=(
+        "Provokes error paths with malformed payloads; classifies response bodies for stack traces, "
+        "framework fingerprints, and internal paths."
+    ),
 )
 async def check_error_disclosure(ctx: CheckContext):
     out = []

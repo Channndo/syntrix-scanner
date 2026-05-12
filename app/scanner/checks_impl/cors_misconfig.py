@@ -14,6 +14,10 @@ from app.scanner.checks import register_check, CheckContext, CheckOutcome
     owasp_mapping="ASI06",
     severity_max="high",
     check_type="dynamic",
+    methodology=(
+        "OPTIONS/GET with Origin and Access-Control-Request-Method headers; evaluates "
+        "Access-Control-Allow-Origin and credentials pairings for dangerous wildcard patterns."
+    ),
 )
 async def check_cors(ctx: CheckContext):
     out = []

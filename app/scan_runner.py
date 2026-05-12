@@ -1,9 +1,16 @@
 """Background scan execution — the thing FastAPI ``BackgroundTasks`` actually calls."""
 
+import os
 from datetime import datetime, timezone
+from typing import Optional
 
 from app.scanner.engine import ScanEngine, ScanRequest, ScanResult
 from app.storage import store
+
+
+def _scanner_build_stamp() -> Optional[str]:
+    raw = (os.getenv("SYNTRIX_SCANNER_BUILD") or os.getenv("RENDER_GIT_COMMIT") or "").strip()[:160]
+    return raw or None
 
 
 async def run_scan_background(req: ScanRequest) -> None:
@@ -25,6 +32,7 @@ async def run_scan_background(req: ScanRequest) -> None:
             risk_score=result.risk_score,
             risk_tier=result.risk_tier,
             completed_at=datetime.now(timezone.utc),
+            scanner_build=_scanner_build_stamp(),
         )
     except Exception as e:
         store.fail_scan(req.scan_id, error=str(e))

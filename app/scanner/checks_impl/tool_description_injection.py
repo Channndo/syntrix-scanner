@@ -65,6 +65,10 @@ async def _fetch_tools_list(ctx: CheckContext):
     severity_max="high",
     check_type="dynamic",
     applies_to=["mcp"],
+    methodology=(
+        "Fetches tool metadata surfaces when available; regex/heuristic match for known prompt-injection "
+        "signatures in descriptions."
+    ),
 )
 async def check_tool_descriptions(ctx: CheckContext):
     out = []

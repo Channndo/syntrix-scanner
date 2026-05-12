@@ -53,6 +53,10 @@ class ScanStatusResponse(BaseModel):
     risk_tier: Optional[str] = None
     submitted_at: datetime
     completed_at: Optional[datetime] = None
+    scanner_build: Optional[str] = Field(
+        default=None,
+        description="Git SHA or operator-set label when the scan completed; null until then.",
+    )
 
 
 class GuestScanSubmit(ScanSubmit):

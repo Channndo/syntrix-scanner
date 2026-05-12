@@ -15,6 +15,10 @@ from app.scanner.checks import register_check, CheckContext, CheckOutcome
     owasp_mapping="ASI02",
     severity_max="high",
     check_type="static",
+    methodology=(
+        "HTTPS-only checks: certificate chain validation via httpx, response headers for HSTS "
+        "and mixed-content hints on the base URL."
+    ),
 )
 async def check_transport(ctx: CheckContext):
     out = []

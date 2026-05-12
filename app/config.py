@@ -160,6 +160,13 @@ class Settings:
         not bool(os.getenv("RENDER")),
     )
 
+    # HTTP hardening — set SYNTRIX_HSTS_MAX_AGE on prod TLS (e.g. 31536000); 0 omits HSTS.
+    security_hsts_max_age: int = _int_env("SYNTRIX_HSTS_MAX_AGE", 0)
+    # Max JSON body for POST /api/mira/chat (Content-Length guard before JSON parse).
+    mira_max_request_body_bytes: int = _int_env("SYNTRIX_MIRA_MAX_BODY_BYTES", 12 * 1024 * 1024)
+    # Guest scan POSTs per client IP per rolling hour (in addition to per-guest_id daily cap).
+    guest_scan_ip_max_per_hour: int = _int_env("SYNTRIX_GUEST_SCAN_IP_MAX_PER_HOUR", 24)
+
     def initial_authorized_as_int(self, email: Optional[str]) -> int:
         """1 = may use product (when authorization gate is on); 0 = JWT ok but API gated."""
         if not self.require_authorized_account:

@@ -25,6 +25,10 @@ def _make_canary():
     severity_max="high",
     check_type="dynamic",
     applies_to=["mcp", "agent_endpoint"],
+    methodology=(
+        "Sends a bounded canary string through tool-like paths; flags reflection of the canary "
+        "or protocol behavior that suggests unsanitized tool output reaching prompts."
+    ),
 )
 async def probe_injection(ctx: CheckContext):
     out = []

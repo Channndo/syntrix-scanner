@@ -43,6 +43,7 @@ from app.auth import (
 from app.auth_rate_limit import client_ip, rate_limit_or_429
 from app.config import settings
 from app.deps import AuthenticatedUser, require_user
+from app.plan_tier import subscription_plan_tier
 from app.security_questions import CANNED_SECURITY_QUESTIONS, question_text
 from app.storage import UserStore, store
 
@@ -213,6 +214,7 @@ def _me_json(user: AuthenticatedUser, raw_row: Optional[Dict[str, Any]]) -> Dict
         "subscription": {
             "status": subrec.get("status") or "inactive",
             "plan_id": subrec.get("plan_id"),
+            "plan_tier": subscription_plan_tier(subrec),
             "current_period_end": subrec.get("current_period_end"),
             "billing_exempt": admin_unlimited,
         },

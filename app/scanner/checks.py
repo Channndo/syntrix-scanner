@@ -46,6 +46,7 @@ class Check:
     severity_max: str
     check_type: str  # "static" | "dynamic"
     applies_to: List[str] = field(default_factory=lambda: ["mcp", "agent_endpoint", "tunnel"])
+    methodology: str = ""
     run_fn: Optional[Callable] = None
 
     async def run(self, ctx: CheckContext) -> List[CheckOutcome]:
@@ -67,6 +68,7 @@ def register_check(
     severity_max: str = "high",
     check_type: str = "static",
     applies_to: Optional[List[str]] = None,
+    methodology: str = "",
 ):
     """Decorator — appends this check to ``REGISTERED_CHECKS`` at import time."""
     def decorator(fn):
@@ -75,6 +77,7 @@ def register_check(
             owasp_mapping=owasp_mapping, severity_max=severity_max,
             check_type=check_type,
             applies_to=applies_to or ["mcp", "agent_endpoint", "tunnel"],
+            methodology=methodology or "",
             run_fn=fn,
         ))
         return fn

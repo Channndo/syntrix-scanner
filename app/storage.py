@@ -134,6 +134,14 @@ class _SQLiteStore:
         self._ensure_guest_scan_columns()
         self._ensure_guest_daily_table()
         self._ensure_mira_user_memory_table()
+        self._ensure_scanner_build_column()
+
+    def _ensure_scanner_build_column(self) -> None:
+        """Git SHA / release label for reproducibility on completed scans (nullable until complete)."""
+        with self._lock, self._conn:
+            cols = {row[1] for row in self._conn.execute("PRAGMA table_info(scans)").fetchall()}
+            if "scanner_build" not in cols:
+                self._conn.execute("ALTER TABLE scans ADD COLUMN scanner_build TEXT")
 
     def _ensure_mira_user_memory_table(self) -> None:
         """Per-user rolling transcript bucket for signed-in MIRA — separate from raw JWT claims."""
@@ -550,6 +558,7 @@ class _SQLiteStore:
             "submitted_at": _from_iso(row["submitted_at"]),
             "completed_at": _from_iso(row["completed_at"]),
             "error": row["error"],
+            "scanner_build": row["scanner_build"] if "scanner_build" in row.keys() else None,
         }
 
     def update_status(self, scan_id: str, status: str, progress: int = 0):
@@ -590,7 +599,14 @@ class _SQLiteStore:
                 summary[sev] += 1
         return summary
 
-    def complete_scan(self, scan_id: str, risk_score: int, risk_tier: str, completed_at: datetime):
+    def complete_scan(
+        self,
+        scan_id: str,
+        risk_score: int,
+        risk_tier: str,
+        completed_at: datetime,
+        scanner_build: Optional[str] = None,
+    ):
         with self._lock, self._conn:
             self._conn.execute(
                 """
@@ -599,10 +615,11 @@ class _SQLiteStore:
                     progress = 100,
                     risk_score = ?,
                     risk_tier = ?,
-                    completed_at = ?
+                    completed_at = ?,
+                    scanner_build = ?
                 WHERE scan_id = ?
                 """,
-                (risk_score, risk_tier, _to_iso(completed_at), scan_id),
+                (risk_score, risk_tier, _to_iso(completed_at), scanner_build, scan_id),
             )
 
     def fail_scan(self, scan_id: str, error: str):

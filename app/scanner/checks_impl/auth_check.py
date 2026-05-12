@@ -18,6 +18,10 @@ PROBE_PATHS = ["", "/", "/mcp", "/v1/mcp", "/messages", "/sse", "/tools/list", "
     owasp_mapping="ASI06",
     severity_max="critical",
     check_type="static",
+    methodology=(
+        "Unauthenticated HTTP GETs against common MCP paths; flags 200 responses whose bodies "
+        "match lightweight MCP/JSON-RPC heuristics."
+    ),
 )
 async def check_auth(ctx: CheckContext):
     out = []

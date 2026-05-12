@@ -11,8 +11,9 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
+from app.auth_rate_limit import client_ip, guest_scan_submit_rate_limit_or_429
 from app.config import settings
 from app.scan_runner import run_scan_background
 from app.scanner.engine import ScanRequest
@@ -58,12 +59,13 @@ def _require_guest_scans_enabled() -> None:
 
 
 @router.post("/scans/guest", response_model=GuestScanResponse)
-async def submit_guest_scan(payload: GuestScanSubmit, bg: BackgroundTasks):
+async def submit_guest_scan(request: Request, payload: GuestScanSubmit, bg: BackgroundTasks):
     """
     Queue one anonymous scan per guest_client_id per UTC day (configurable).
     Returns poll_token — required to poll status/findings without logging in.
     """
     _require_guest_scans_enabled()
+    guest_scan_submit_rate_limit_or_429(client_ip(request))
     try:
         guest_key = str(uuid.UUID(payload.guest_client_id.strip()))
     except ValueError:
