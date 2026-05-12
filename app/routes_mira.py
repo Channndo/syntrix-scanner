@@ -8,6 +8,8 @@ import binascii
 import json
 import logging
 import os
+import time
+import uuid
 from io import BytesIO
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -19,6 +21,7 @@ from pypdf import PdfReader
 
 from app.auth_rate_limit import client_ip, mira_rate_limit_or_429
 from app.config import settings
+from app.mira_obs import mira_obs
 from app.deps import AuthenticatedUser, optional_user
 from app.mira_prompt import MIRA_SYSTEM_PROMPT
 from app.storage import store
@@ -176,11 +179,14 @@ def _extract_pdf_text(raw: bytes, max_chars: int = 120_000) -> str:
     return out[:max_chars]
 
 
-def merge_mira_attachments(attachments: List[MiraChatAttachment]) -> Tuple[str, List[str], int]:
+def merge_mira_attachments(
+    attachments: List[MiraChatAttachment],
+) -> Tuple[str, List[str], int, Dict[str, int]]:
     """Build extra user text plus up to four base64 images for Ollama."""
     extra_parts: List[str] = []
     images: List[str] = []
     raw_byte_budget = 0
+    attach_counts = {"image": 0, "pdf": 0, "text": 0}
 
     for i, item in enumerate(attachments):
         fname = _sanitize_mira_text(item.filename).strip() or f"file_{i + 1}"
@@ -217,6 +223,7 @@ def merge_mira_attachments(attachments: List[MiraChatAttachment]) -> Tuple[str, 
                     detail=f"Too many images (max {_MIRA_MAX_IMAGES} per message).",
                 )
             images.append(b64)
+            attach_counts["image"] += 1
             continue
 
         if _mime_is_pdf(mime, fname):
@@ -243,6 +250,7 @@ def merge_mira_attachments(attachments: List[MiraChatAttachment]) -> Tuple[str, 
             else:
                 cap_file = min(len(snippet), _MIRA_PER_TEXT_FILE_MAX)
                 extra_parts.append(f"--- Attached PDF: {fname} ---\n{snippet[:cap_file]}")
+            attach_counts["pdf"] += 1
             continue
 
         if _mime_textish(mime, fname):
@@ -265,6 +273,7 @@ def merge_mira_attachments(attachments: List[MiraChatAttachment]) -> Tuple[str, 
                 cap_file = min(len(text), _MIRA_PER_TEXT_FILE_MAX)
                 extra_parts.append(f"--- Attached file: {fname} ---\n{text[:cap_file]}")
             raw_byte_budget += cap_file
+            attach_counts["text"] += 1
             continue
 
         raise HTTPException(
@@ -278,7 +287,7 @@ def merge_mira_attachments(attachments: List[MiraChatAttachment]) -> Tuple[str, 
     merged = "\n\n".join(extra_parts).strip()
     if len(merged) > _MIRA_MERGED_ATTACH_TEXT_MAX:
         merged = merged[:_MIRA_MERGED_ATTACH_TEXT_MAX] + "\n[…attachment text truncated…]"
-    return merged, images, raw_byte_budget
+    return merged, images, raw_byte_budget, attach_counts
 
 
 def _last_user_message_index(messages: List[MiraChatMessage]) -> Optional[int]:
@@ -316,19 +325,32 @@ async def _ollama_chat_stream_aggregate(
     headers: Dict[str, str],
     model_fallback: str,
     wall_seconds: float,
-) -> Tuple[str, str]:
+    *,
+    request_id: str = "",
+) -> Tuple[str, str, Dict[str, Any]]:
     """
     Ollama /api/chat with stream=true. httpx read timeout is *per idle gap between chunks*; a long
     time-to-first-token on non-streaming POST counts as one read and trips MIRA on CPU hosts.
     We disable per-read timeout on the stream and cap total wall time with asyncio.wait_for.
+    Returns upstream timing metrics for observability (no prompt/body content logged).
     """
     payload = {**body, "stream": True}
     state: Dict[str, Any] = {"model": model_fallback, "parts": []}
+    timing_meta: Dict[str, Any] = {}
+    t_upstream_start = time.perf_counter()
 
     async def _consume() -> None:
         async with client.stream("POST", url, json=payload, headers=headers) as r:
             if r.status_code >= 400:
                 raw = (await r.aread()).decode("utf-8", errors="replace")[:800]
+                elapsed_ms = round((time.perf_counter() - t_upstream_start) * 1000, 3)
+                mira_obs(
+                    "mira_ollama_http_error",
+                    request_id=request_id or None,
+                    status_code=r.status_code,
+                    upstream_ms=elapsed_ms,
+                    error_body_chars=len(raw),
+                )
                 raise HTTPException(
                     status_code=502,
                     detail=f"Model server error: {raw}",
@@ -350,11 +372,23 @@ async def _ollama_chat_stream_aggregate(
                 if isinstance(msg, dict):
                     piece = msg.get("content")
                     if isinstance(piece, str) and piece:
+                        if "first_token_ms" not in timing_meta:
+                            timing_meta["first_token_ms"] = round(
+                                (time.perf_counter() - t_upstream_start) * 1000,
+                                3,
+                            )
                         state["parts"].append(piece)
 
     try:
         await asyncio.wait_for(_consume(), timeout=wall_seconds)
     except asyncio.TimeoutError as exc:
+        elapsed_ms = round((time.perf_counter() - t_upstream_start) * 1000, 3)
+        mira_obs(
+            "mira_ollama_stream_wall_timeout",
+            request_id=request_id or None,
+            upstream_ms=elapsed_ms,
+            wall_seconds=round(wall_seconds, 3),
+        )
         raise HTTPException(
             status_code=504,
             detail=(
@@ -363,8 +397,18 @@ async def _ollama_chat_stream_aggregate(
             ),
         ) from exc
 
+    timing_meta["upstream_wall_ms"] = round(
+        (time.perf_counter() - t_upstream_start) * 1000,
+        3,
+    )
     content = "".join(state["parts"]).strip()
-    return content, str(state["model"] or model_fallback)
+    used_model = str(state["model"] or model_fallback)
+    metrics: Dict[str, Any] = {
+        "upstream_wall_ms": timing_meta.get("upstream_wall_ms"),
+        "first_token_ms": timing_meta.get("first_token_ms"),
+        "model": used_model,
+    }
+    return content, used_model, metrics
 
 
 @router.post("/chat", response_model=MiraChatResponse)
@@ -381,37 +425,59 @@ async def mira_chat(
     PDF text become prompt context; images are passed as base64 to Ollama when the model supports vision.
     """
     _require_mira_enabled()
+    request_id = uuid.uuid4().hex[:16]
     ip = client_ip(request)
+    t_handler_start = time.perf_counter()
     mira_rate_limit_or_429(
         ip,
         settings.mira_rate_max_requests,
         settings.mira_rate_window_sec,
     )
     attach_list = list(payload.attachments or [])
-    extra_text, image_b64s, attach_byte_metric = (
-        merge_mira_attachments(attach_list) if attach_list else ("", [], 0)
-    )
+    if attach_list:
+        extra_text, image_b64s, attach_byte_metric, attach_counts = merge_mira_attachments(
+            attach_list
+        )
+    else:
+        extra_text, image_b64s, attach_byte_metric = "", [], 0
+        attach_counts = {"image": 0, "pdf": 0, "text": 0}
 
     client_chars = sum(len(m.content) for m in payload.messages)
     client_chars += len(extra_text) + sum(len(b) for b in image_b64s)
-    logger.info(
-        "mira_chat start ip=%s authed=%s messages=%d client_chars=%d attachments=%d attach_bytes~=%d",
-        ip,
-        bool(user),
-        len(payload.messages),
-        client_chars,
-        len(attach_list),
-        attach_byte_metric,
+    prep_ms = round((time.perf_counter() - t_handler_start) * 1000, 3)
+    mira_obs(
+        "mira_chat_start",
+        request_id=request_id,
+        ip=ip,
+        authed=bool(user),
+        messages=len(payload.messages),
+        client_chars=client_chars,
+        attachments=len(attach_list),
+        attach_bytes=attach_byte_metric,
+        attach_image=attach_counts.get("image", 0),
+        attach_pdf=attach_counts.get("pdf", 0),
+        attach_text=attach_counts.get("text", 0),
+        prep_ms_before_upstream=prep_ms,
     )
 
     base = (settings.ollama_base_url or "").strip().rstrip("/")
     model = (settings.ollama_model or "").strip()
     if not base:
+        mira_obs(
+            "mira_chat_config_error",
+            request_id=request_id,
+            reason="ollama_base_missing",
+        )
         raise HTTPException(
             status_code=503,
             detail="OLLAMA_BASE_URL is not configured on this API.",
         )
     if not model:
+        mira_obs(
+            "mira_chat_config_error",
+            request_id=request_id,
+            reason="ollama_model_missing",
+        )
         raise HTTPException(
             status_code=503,
             detail="OLLAMA_MODEL is not configured on this API.",
@@ -473,30 +539,39 @@ async def mira_chat(
     # Stream: read=None avoids failing on long gaps *before first token*; wall caps total time.
     # Generous connect/write so Render→user-VPS cold paths do not trip httpx before Ollama streams.
     stream_timeout = httpx.Timeout(connect=90.0, read=None, write=300.0, pool=90.0)
+    t_upstream_mark = time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=stream_timeout) as client:
-            content, used_model = await _ollama_chat_stream_aggregate(
-                client, url, body, ollama_headers, model, wall_seconds=wall
+            content, used_model, upstream_metrics = await _ollama_chat_stream_aggregate(
+                client,
+                url,
+                body,
+                ollama_headers,
+                model,
+                wall,
+                request_id=request_id,
             )
     except httpx.ConnectError as exc:
-        logger.warning(
-            "mira_chat ollama_connect_fail ip=%s messages=%d client_chars=%d err=%s",
-            ip,
-            len(payload.messages),
-            client_chars,
-            exc,
+        fail_ms = round((time.perf_counter() - t_upstream_mark) * 1000, 3)
+        mira_obs(
+            "mira_chat_upstream_connect_error",
+            request_id=request_id,
+            ip=ip,
+            upstream_ms=fail_ms,
+            err_type=type(exc).__name__,
         )
         raise HTTPException(
             status_code=503,
             detail="Could not reach the language model server. Check OLLAMA_BASE_URL and network access.",
         ) from exc
     except httpx.TimeoutException as exc:
-        logger.warning(
-            "mira_chat ollama_http_timeout ip=%s messages=%d client_chars=%d detail=%s",
-            ip,
-            len(payload.messages),
-            client_chars,
-            str(exc)[:200],
+        fail_ms = round((time.perf_counter() - t_upstream_mark) * 1000, 3)
+        mira_obs(
+            "mira_chat_upstream_transport_timeout",
+            request_id=request_id,
+            ip=ip,
+            upstream_ms=fail_ms,
+            detail=str(exc)[:200],
         )
         raise HTTPException(
             status_code=504,
@@ -509,11 +584,12 @@ async def mira_chat(
         ) from exc
 
     if not content:
-        logger.warning(
-            "mira_chat empty_reply ip=%s messages=%d client_chars=%d",
-            ip,
-            len(payload.messages),
-            client_chars,
+        mira_obs(
+            "mira_chat_empty_reply",
+            request_id=request_id,
+            ip=ip,
+            upstream_wall_ms=upstream_metrics.get("upstream_wall_ms"),
+            first_token_ms=upstream_metrics.get("first_token_ms"),
         )
         raise HTTPException(status_code=502, detail="Empty reply from model.")
 
@@ -526,13 +602,23 @@ async def mira_chat(
             except Exception:
                 logger.exception("MIRA user memory update failed for sub=%s", user.sub)
 
-    logger.info(
-        "mira_chat ok ip=%s authed=%s messages=%d client_chars=%d reply_chars=%d model=%s",
-        ip,
-        bool(user),
-        len(payload.messages),
-        client_chars,
-        len(content),
-        used_model,
+    handler_total_ms = round((time.perf_counter() - t_handler_start) * 1000, 3)
+    mira_obs(
+        "mira_chat_ok",
+        request_id=request_id,
+        ip=ip,
+        authed=bool(user),
+        messages=len(payload.messages),
+        client_chars=client_chars,
+        attachments=len(attach_list),
+        attach_bytes=attach_byte_metric,
+        attach_image=attach_counts.get("image", 0),
+        attach_pdf=attach_counts.get("pdf", 0),
+        attach_text=attach_counts.get("text", 0),
+        reply_chars=len(content),
+        model=used_model,
+        upstream_wall_ms=upstream_metrics.get("upstream_wall_ms"),
+        first_token_ms=upstream_metrics.get("first_token_ms"),
+        handler_total_ms=handler_total_ms,
     )
     return MiraChatResponse(message=content, model=used_model)

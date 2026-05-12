@@ -39,7 +39,7 @@ def test_mira_chat_anonymous_not_401():
 
 
 def test_merge_mira_text_attachment():
-    extra, imgs, _n = merge_mira_attachments(
+    extra, imgs, _n, counts = merge_mira_attachments(
         [
             MiraChatAttachment(
                 filename="notes.txt",
@@ -51,6 +51,7 @@ def test_merge_mira_text_attachment():
     )
     assert "secret=abc123" in extra
     assert imgs == []
+    assert counts.get("text") == 1
 
 
 def test_merge_mira_rejects_bad_image_base64():

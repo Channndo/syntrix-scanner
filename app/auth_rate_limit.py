@@ -8,6 +8,8 @@ from typing import Dict, List
 
 from fastapi import HTTPException, Request, status
 
+from app.mira_obs import mira_obs
+
 _RATE_LOCK = threading.Lock()
 _RATE_HITS: Dict[str, List[float]] = {}
 _RATE_WINDOW_SEC = 60.0
@@ -52,6 +54,12 @@ def mira_rate_limit_or_429(ip: str, max_requests: int, window_sec: float) -> Non
         while hits and hits[0] < cutoff:
             hits.pop(0)
         if len(hits) >= max_requests:
+            mira_obs(
+                "mira_rate_limited",
+                ip=ip,
+                max_requests=max_requests,
+                window_sec=round(window_sec, 3),
+            )
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Too many MIRA requests. Try again shortly.",
