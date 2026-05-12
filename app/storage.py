@@ -158,7 +158,7 @@ class _SQLiteStore:
             )
 
     def get_mira_user_memory(self, auth_sub: str) -> str:
-        """Fetch the stitched memory blob we prepend to MIRA’s system prompt for this user."""
+        """Fetch the stitched memory blob for Mindroot-backed MIRA context for this user."""
         with self._lock:
             row = self._conn.execute(
                 "SELECT memory_text FROM mira_user_memory WHERE auth_sub = ?",
@@ -177,7 +177,7 @@ class _SQLiteStore:
         max_chars: int = 12000,
     ) -> None:
         """
-        Append a trimmed Q/A pair to the user’s rolling MIRA memory.
+        Append a trimmed Q/A pair to the user’s rolling MIRA memory (Mindroot transcript window).
 
         Caps keep one chatty session from bloating prompts — oldest text falls off the front first.
         """

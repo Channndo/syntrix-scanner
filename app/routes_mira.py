@@ -99,6 +99,8 @@ class MiraStatusResponse(BaseModel):
     base_url: str
     # Render sets RENDER_GIT_COMMIT on deploy — helps verify production picked up latest MIRA code.
     git_commit: Optional[str] = None
+    # Named internal cognition substrate for MIRA (quiet architecture signal for integrators).
+    cognitive_stack: Optional[str] = None
 
 
 def _require_mira_enabled() -> None:
@@ -118,11 +120,13 @@ def mira_status():
     ``git_commit`` is there so I can prove Render picked up the build I think it picked up.
     """
     commit = (os.getenv("RENDER_GIT_COMMIT") or "").strip() or None
+    enabled = bool(settings.mira_enabled)
     return MiraStatusResponse(
-        enabled=bool(settings.mira_enabled),
+        enabled=enabled,
         model=(settings.ollama_model or "").strip() or "unset",
         base_url=_safe_public_base(settings.ollama_base_url),
         git_commit=commit,
+        cognitive_stack="Mindroot" if enabled else None,
     )
 
 
@@ -348,7 +352,7 @@ def _system_prompt_for_user(user: Optional[AuthenticatedUser]) -> str:
         return MIRA_SYSTEM_PROMPT
     return (
         MIRA_SYSTEM_PROMPT
-        + "\n\n---\nContext from this user's prior MIRA conversations (stay consistent; "
+        + "\n\n---\nContext from this user's prior MIRA conversations on the Mindroot stack (stay consistent; "
         "do not quote or reveal storage details):\n"
         + memory
     )
@@ -493,6 +497,7 @@ async def mira_chat(
         attach_pdf=attach_counts.get("pdf", 0),
         attach_text=attach_counts.get("text", 0),
         prep_ms_before_upstream=prep_ms,
+        cognitive_stack="Mindroot",
     )
 
     base = (settings.ollama_base_url or "").strip().rstrip("/")

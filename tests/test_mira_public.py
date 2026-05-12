@@ -26,6 +26,7 @@ def test_mira_status_public():
     assert "model" in body
     assert "base_url" in body
     assert "git_commit" in body
+    assert body.get("cognitive_stack") == ("Mindroot" if body.get("enabled") else None)
 
 
 def test_mira_chat_anonymous_not_401():

@@ -15,7 +15,7 @@ from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, Literal
+from typing import Any, Dict, Optional, Literal
 from datetime import datetime, timezone
 import logging
 import os
@@ -79,13 +79,16 @@ app.include_router(team_router, prefix="/api/team")
 @app.get("/api/mira", tags=["mira"])
 def mira_service_index():
     """Cheap discovery JSON — proves the MIRA router is mounted without waking Ollama."""
-    return {
+    out: Dict[str, Any] = {
         "service": "mira",
         "paths": {
             "status": "/api/mira/status",
             "chat": "/api/mira/chat",
         },
     }
+    if settings.mira_enabled:
+        out["cognitive_stack"] = "Mindroot"
+    return out
 
 
 # ========== MODELS ==========
