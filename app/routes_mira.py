@@ -138,6 +138,15 @@ def _safe_public_base(url: str) -> str:
     return u or "(unset)"
 
 
+# Prepended to the merged user turn when images are present — steers small vision models away from
+# misclassifying security screenshots as “harmful content” wholesale refusals.
+_MIRA_VISION_USER_PREFIX = (
+    "[Context: Images were uploaded inside Syntrix MIRA for defensive cybersecurity review. "
+    "Transcribe readable UI text, interpret alerts/metrics/severities, and give remediation-oriented guidance. "
+    "Do not refuse the entire request as disallowed; only decline explicit attack recipes against systems "
+    "the user has not framed as theirs or authorized.]\n\n"
+)
+
 _MIRA_MAX_IMAGES = 4
 _MIRA_MAX_PDF_DECODED_BYTES = 4 * 1024 * 1024
 _MIRA_IMAGE_B64_MAX_CHARS = 5_500_000
@@ -546,6 +555,8 @@ async def mira_chat(
                 merged = piece
             if len(merged) > 200_000:
                 merged = merged[:200_000] + "\n[…truncated…]"
+            if image_b64s:
+                merged = _MIRA_VISION_USER_PREFIX + merged
             entry["content"] = merged
             if image_b64s:
                 entry["images"] = image_b64s
