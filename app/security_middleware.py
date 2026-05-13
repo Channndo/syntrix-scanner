@@ -43,6 +43,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "Strict-Transport-Security",
                 f"max-age={settings.security_hsts_max_age}; includeSubDomains",
             )
+        # MIRA replies can be sensitive; do not let shared caches retain POST responses.
+        if request.method == "POST" and request.url.path.rstrip("/") == "/api/mira/chat":
+            response.headers.setdefault("Cache-Control", "no-store")
         return response
 
 

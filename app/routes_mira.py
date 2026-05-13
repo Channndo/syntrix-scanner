@@ -150,6 +150,8 @@ _MIRA_VISION_USER_PREFIX = (
 )
 
 _MIRA_MAX_IMAGES = 4
+# Cap stitched assistant text returned to browsers / stored in rolling memory (defense in depth vs runaway streams).
+_MIRA_MAX_REPLY_CHARS = 48_000
 _MIRA_MAX_PDF_DECODED_BYTES = 4 * 1024 * 1024
 _MIRA_IMAGE_B64_MAX_CHARS = 5_500_000
 _MIRA_MERGED_ATTACH_TEXT_MAX = 100_000
@@ -180,6 +182,66 @@ def _strip_data_url_b64(data: str) -> str:
 
 def _mime_is_image(mime: str) -> bool:
     return (mime or "").strip().lower().startswith("image/")
+
+
+# Vision path only accepts common raster formats; magic bytes must match declared MIME (no SVG/ZIP/etc.).
+_MIRA_RASTER_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+
+
+def _normalize_claimed_image_mime(mime: str) -> str:
+    m = (mime or "").strip().lower()
+    if m == "image/jpg":
+        return "image/jpeg"
+    return m
+
+
+def _sniff_raster_image_magic(raw: bytes) -> Optional[str]:
+    """Return canonical image/* MIME from file magic, or None if not a supported raster."""
+    if len(raw) < 12:
+        return None
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith(b"GIF87a") or raw.startswith(b"GIF89a"):
+        return "image/gif"
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _require_image_mime_matches_magic(fname: str, claimed_mime: str, raw: bytes) -> None:
+    norm = _normalize_claimed_image_mime(claimed_mime)
+    if norm not in _MIRA_RASTER_IMAGE_MIMES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Image {fname}: type {claimed_mime!r} is not supported for MIRA "
+                "(use PNG, JPEG, GIF, or WebP)."
+            ),
+        )
+    sniffed = _sniff_raster_image_magic(raw)
+    if not sniffed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image {fname} is not a recognized PNG, JPEG, GIF, or WebP file.",
+        )
+    if sniffed != norm:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Image {fname}: declared type {claimed_mime!r} does not match file contents ({sniffed})."
+            ),
+        )
+
+
+def _require_pdf_magic(fname: str, raw: bytes) -> None:
+    head = raw.lstrip(b" \t\r\n\xef\xbb\xbf")
+    if len(head) < 5 or not head.startswith(b"%PDF"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"PDF {fname} does not look like a valid PDF file.",
+        )
 
 
 def _mime_is_pdf(mime: str, filename: str) -> bool:
@@ -264,6 +326,7 @@ def merge_mira_attachments(
                     status_code=400,
                     detail=f"Image {fname} exceeds 4MB after decoding.",
                 )
+            _require_image_mime_matches_magic(fname, mime, decoded)
             raw_byte_budget += len(decoded)
             if len(images) >= _MIRA_MAX_IMAGES:
                 raise HTTPException(
@@ -290,6 +353,7 @@ def merge_mira_attachments(
                 ) from exc
             if len(decoded) > _MIRA_MAX_PDF_DECODED_BYTES:
                 raise HTTPException(status_code=400, detail=f"PDF {fname} exceeds 4MB.")
+            _require_pdf_magic(fname, decoded)
             raw_byte_budget += len(decoded)
             extracted = _extract_pdf_text(decoded)
             snippet = _sanitize_mira_text(extracted) if extracted else ""
@@ -645,6 +709,10 @@ async def mira_chat(
             first_token_ms=upstream_metrics.get("first_token_ms"),
         )
         raise HTTPException(status_code=502, detail="Empty reply from model.")
+
+    if len(content) > _MIRA_MAX_REPLY_CHARS:
+        tail = "\n\n[Reply truncated by server for size limits.]"
+        content = content[: _MIRA_MAX_REPLY_CHARS - len(tail)] + tail
 
     if user:
         u_text = _last_user_text(payload.messages)
