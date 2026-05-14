@@ -195,3 +195,16 @@ async def _redirect_to_unsafe_scheme_returns_redirect_response():
 
 def test_redirect_to_unsafe_scheme_does_not_follow():
     _run(_redirect_to_unsafe_scheme_returns_redirect_response())
+
+
+async def _oversized_first_url_raises_invalid_url():
+    transport = httpx.MockTransport(lambda r: (_ for _ in ()).throw(AssertionError("no request")))
+
+    async with httpx.AsyncClient(transport=transport, follow_redirects=False) as inner:
+        c = RedirectSafeAsyncClient(inner, lambda _u: True)
+        with pytest.raises(httpx.InvalidURL, match="length"):
+            await c.get("https://example.com/" + ("z" * 20_000))
+
+
+def test_oversized_url_never_hits_transport():
+    _run(_oversized_first_url_raises_invalid_url())

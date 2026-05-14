@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from app.config import settings
 from app.scanner.checks import REGISTERED_CHECKS, Check, CheckContext, CheckOutcome
 from app.scanner.dns_pin import DnsPinnedAsyncClient, resolve_scan_host
-from app.scanner.probe_url_policy import is_probe_scheme_allowed
+from app.scanner.probe_url_policy import is_probe_scheme_allowed, is_probe_url_shape_acceptable
 from app.scanner.redirect_safe_client import RedirectSafeAsyncClient
 from app.scanner.response_cap_transport import ResponseCapTransport
 
@@ -83,11 +83,14 @@ def _is_target_allowed(target: str) -> bool:
     flags say otherwise.
 
     Literal IPs in the URL are checked here. Explicit high-risk ports (``Settings.probe_forbidden_ports`` /
-    ``SYNTRIX_PROBE_FORBIDDEN_PORTS``) are rejected. Hostname policy (DNS) is enforced in ``ScanEngine.run``
+    ``SYNTRIX_PROBE_FORBIDDEN_PORTS``) are rejected. Shape limits (length, no CRLF, no URL
+    embedded credentials) use ``is_probe_url_shape_acceptable``. Hostname policy (DNS) is enforced in ``ScanEngine.run``
     via ``resolve_scan_host`` plus ``DnsPinnedAsyncClient`` so probes cannot TOCTOU to a different
     address at connect time.
     """
-    parsed = urlparse(target)
+    parsed = urlparse(str(target).strip())
+    if not is_probe_url_shape_acceptable(target):
+        return False
     if not is_probe_scheme_allowed(target):
         return False
     if parsed.port is not None and int(parsed.port) in settings.probe_forbidden_ports:

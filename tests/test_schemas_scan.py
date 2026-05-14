@@ -37,3 +37,29 @@ def test_scan_submit_invalid_not_a_url():
                 "depth": "quick",
             }
         )
+
+
+def test_scan_submit_rejects_userinfo_in_url():
+    with pytest.raises(ValidationError, match="auth_header"):
+        ScanSubmit.model_validate(
+            {
+                "target_url": "https://u:p@203.0.113.10/",
+                "scan_type": "mcp",
+                "depth": "quick",
+            }
+        )
+
+
+def test_scan_submit_rejects_overlong_url(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "probe_max_target_url_chars", 60)
+    long_path = "x" * 80
+    with pytest.raises(ValidationError, match="maximum length"):
+        ScanSubmit.model_validate(
+            {
+                "target_url": f"https://203.0.113.10/{long_path}",
+                "scan_type": "mcp",
+                "depth": "quick",
+            }
+        )

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal, Optional
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
+
+from app.config import settings
 
 
 class ScanSubmit(BaseModel):
@@ -23,6 +26,23 @@ class ScanSubmit(BaseModel):
             s = v.strip()
             if s and not s.lower().startswith(("http://", "https://")):
                 return f"https://{s}"
+        return v
+
+    @field_validator("target_url", mode="after")
+    @classmethod
+    def _reject_bad_probe_url_shape(cls, v: HttpUrl) -> HttpUrl:
+        raw = str(v)
+        if len(raw) > settings.probe_max_target_url_chars:
+            raise ValueError(
+                f"target_url exceeds maximum length ({settings.probe_max_target_url_chars} characters)"
+            )
+        if "\n" in raw or "\r" in raw:
+            raise ValueError("target_url must not contain newline characters")
+        p = urlparse(raw)
+        if p.username is not None or p.password is not None:
+            raise ValueError(
+                "target_url must not embed credentials (user:pass@host); use auth_header instead"
+            )
         return v
 
     scan_type: Literal["mcp", "agent_endpoint", "tunnel"] = "mcp"

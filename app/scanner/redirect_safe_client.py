@@ -19,7 +19,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from app.scanner.probe_url_policy import is_probe_scheme_allowed
+from app.scanner.probe_url_policy import is_probe_scheme_allowed, is_probe_url_shape_acceptable
 
 # Enough for typical http→https and trailing-slash chains; stops redirect loops cheaply.
 _MAX_SCAN_REDIRECTS = 8
@@ -78,6 +78,14 @@ class RedirectSafeAsyncClient:
         last: Optional[httpx.Response] = None
 
         for _ in range(_MAX_SCAN_REDIRECTS + 1):
+            if not is_probe_url_shape_acceptable(current):
+                if last is not None:
+                    return last
+                raise httpx.InvalidURL(
+                    "Scan probe URL rejected (length, line breaks, or embedded userinfo in URL; "
+                    "see SYNTRIX_PROBE_MAX_TARGET_URL_CHARS)."
+                )
+
             if not is_probe_scheme_allowed(current):
                 if last is not None:
                     return last

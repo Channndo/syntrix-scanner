@@ -25,6 +25,19 @@ def test_only_http_https_schemes():
     assert _is_target_allowed("dict://127.0.0.1:6379/info") is False
 
 
+def test_embedded_url_credentials_rejected():
+    assert _is_target_allowed("https://user:pass@example.com/") is False
+
+
+def test_newline_in_url_rejected():
+    assert _is_target_allowed("https://example.com/evil\n") is False
+
+
+def test_overlong_target_rejected(monkeypatch):
+    monkeypatch.setattr(settings, "probe_max_target_url_chars", 50)
+    assert _is_target_allowed("https://example.com/" + "x" * 60) is False
+
+
 def test_high_risk_ports_blocked_by_default():
     assert _is_target_allowed("https://example.com:6379/") is False
     assert _is_target_allowed("http://example.com:25/") is False

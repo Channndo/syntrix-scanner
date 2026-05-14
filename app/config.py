@@ -160,6 +160,8 @@ class Settings:
     # SSRF pivots (Redis, SMTP, Docker, …). Default list when unset; set SYNTRIX_PROBE_FORBIDDEN_PORTS=
     # (empty) to disable, or to a comma list to replace the defaults.
     probe_forbidden_ports: FrozenSet[int] = _parse_forbidden_probe_ports()
+    # Max characters for submitted scan targets and redirect ``Location`` URLs (minimum 256).
+    probe_max_target_url_chars: int = max(256, _int_env("SYNTRIX_PROBE_MAX_TARGET_URL_CHARS", 8192))
 
     # Safety: never probe these target patterns even if requested
     forbidden_target_patterns: List[str] = [
