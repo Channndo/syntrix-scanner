@@ -96,7 +96,7 @@ def optional_user(
     """
     Soft gate: JWT wins if it’s legit; otherwise None so MIRA (and friends) can stay public.
 
-    MIRA uses this so signed-in folks get memory without forcing login for everyone.
+    MIRA uses this so signed-in users can send a JWT without forcing login for everyone.
     """
     if not creds or not creds.credentials:
         return None

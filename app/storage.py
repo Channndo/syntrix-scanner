@@ -1,7 +1,7 @@
 """
 Storage layer — SQLite is the whole product database for v1.
 
-Users, password hashes, subscriptions, scans, findings, waitlist, MIRA memory — it all lands here.
+Users, password hashes, subscriptions, scans, findings, waitlist — it all lands here.
 I use lightweight migrations (``ALTER TABLE`` guards) so older DB files on disk don’t brick startup.
 """
 
@@ -133,7 +133,6 @@ class _SQLiteStore:
         self._ensure_password_history_table()
         self._ensure_guest_scan_columns()
         self._ensure_guest_daily_table()
-        self._ensure_mira_user_memory_table()
         self._ensure_scanner_build_column()
 
     def _ensure_scanner_build_column(self) -> None:
@@ -142,70 +141,6 @@ class _SQLiteStore:
             cols = {row[1] for row in self._conn.execute("PRAGMA table_info(scans)").fetchall()}
             if "scanner_build" not in cols:
                 self._conn.execute("ALTER TABLE scans ADD COLUMN scanner_build TEXT")
-
-    def _ensure_mira_user_memory_table(self) -> None:
-        """Per-user rolling transcript bucket for signed-in MIRA — separate from raw JWT claims."""
-        with self._lock, self._conn:
-            self._conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS mira_user_memory (
-                    auth_sub TEXT PRIMARY KEY,
-                    memory_text TEXT NOT NULL DEFAULT '',
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY (auth_sub) REFERENCES users(auth_sub) ON DELETE CASCADE
-                )
-                """
-            )
-
-    def get_mira_user_memory(self, auth_sub: str) -> str:
-        """Fetch the stitched memory blob for Mindroot-backed MIRA context for this user."""
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT memory_text FROM mira_user_memory WHERE auth_sub = ?",
-                (auth_sub,),
-            ).fetchone()
-        if not row:
-            return ""
-        return str(row["memory_text"] or "")
-
-    def append_mira_user_memory(
-        self,
-        auth_sub: str,
-        user_text: str,
-        assistant_text: str,
-        *,
-        max_chars: int = 12000,
-    ) -> None:
-        """
-        Append a trimmed Q/A pair to the user’s rolling MIRA memory (Mindroot transcript window).
-
-        Caps keep one chatty session from bloating prompts — oldest text falls off the front first.
-        """
-        u = (user_text or "").strip()[:2000]
-        a = (assistant_text or "").strip()[:4000]
-        chunk = f"User: {u}\nAssistant: {a}\n\n"
-        now = _to_iso(datetime.now(timezone.utc))
-        with self._lock, self._conn:
-            prev = ""
-            row = self._conn.execute(
-                "SELECT memory_text FROM mira_user_memory WHERE auth_sub = ?",
-                (auth_sub,),
-            ).fetchone()
-            if row:
-                prev = str(row["memory_text"] or "")
-            merged = (prev + chunk).strip()
-            if len(merged) > max_chars:
-                merged = merged[-max_chars:]
-            self._conn.execute(
-                """
-                INSERT INTO mira_user_memory (auth_sub, memory_text, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(auth_sub) DO UPDATE SET
-                    memory_text = excluded.memory_text,
-                    updated_at = excluded.updated_at
-                """,
-                (auth_sub, merged, now),
-            )
 
     def _ensure_guest_scan_columns(self) -> None:
         with self._lock, self._conn:

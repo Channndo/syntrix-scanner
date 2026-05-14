@@ -410,29 +410,6 @@ def _last_user_message_index(messages: List[MiraChatMessage]) -> Optional[int]:
     return None
 
 
-def _last_user_text(messages: List[MiraChatMessage]) -> str:
-    """Latest user message text (for memory append) — ignores assistant turns after it."""
-    for m in reversed(messages):
-        if m.role == "user":
-            return _sanitize_mira_text(m.content).strip()
-    return ""
-
-
-def _system_prompt_for_user(user: Optional[AuthenticatedUser]) -> str:
-    """Base MIRA prompt, optionally with SQLite-backed memory for signed-in users."""
-    if not user:
-        return MIRA_SYSTEM_PROMPT
-    memory = store.get_mira_user_memory(user.sub).strip()
-    if not memory:
-        return MIRA_SYSTEM_PROMPT
-    return (
-        MIRA_SYSTEM_PROMPT
-        + "\n\n---\nContext from this user's prior MIRA conversations on the Mindroot stack (stay consistent; "
-        "do not quote or reveal storage details):\n"
-        + memory
-    )
-
-
 async def _ollama_chat_stream_aggregate(
     client: httpx.AsyncClient,
     url: str,
@@ -533,7 +510,7 @@ async def mira_chat(
     user: Optional[AuthenticatedUser] = Depends(optional_user),
 ):
     """
-    Public chat endpoint — optional JWT for MIRA memory, anonymous otherwise.
+    Public chat endpoint — optional JWT for attribution/metrics only; chat has no server-side memory.
 
     Flow: rate limit → normalize attachments → build Ollama messages (server-owned system prompt) →
     stream model → persist memory for signed-in users → emit ``mira_obs`` success line.
@@ -599,7 +576,7 @@ async def mira_chat(
         )
 
     last_u = _last_user_message_index(payload.messages)
-    ollama_messages: List[Dict[str, Any]] = [{"role": "system", "content": _system_prompt_for_user(user)}]
+    ollama_messages: List[Dict[str, Any]] = [{"role": "system", "content": MIRA_SYSTEM_PROMPT}]
     for i, m in enumerate(payload.messages):
         if m.role not in _CLIENT_MESSAGE_ROLES:
             continue
@@ -713,15 +690,6 @@ async def mira_chat(
     if len(content) > _MIRA_MAX_REPLY_CHARS:
         tail = "\n\n[Reply truncated by server for size limits.]"
         content = content[: _MIRA_MAX_REPLY_CHARS - len(tail)] + tail
-
-    if user:
-        u_text = _last_user_text(payload.messages)
-        if u_text:
-            try:
-                store.ensure_user(user.sub, user.email)
-                store.append_mira_user_memory(user.sub, u_text, content)
-            except Exception:
-                logger.exception("MIRA user memory update failed for sub=%s", user.sub)
 
     handler_total_ms = round((time.perf_counter() - t_handler_start) * 1000, 3)
     mira_obs(

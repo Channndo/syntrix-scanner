@@ -183,7 +183,7 @@ class Settings:
     # User agent for outbound probes
     probe_user_agent: str = "Syntrix-Scanner/0.1 (+https://syntrix.solutions/scanner)"
 
-    # Data store — accounts, scans, MIRA memory. On Render with a Disk mounted at `/data`, defaults to
+    # Data store — accounts, scans, findings, billing, waitlist. On Render with a Disk mounted at `/data`, defaults to
     # `/data/syntrix.db` so users survive redeploys. Override with SYNTRIX_SQLITE_PATH.
     sqlite_path: str = _default_sqlite_path()
 
