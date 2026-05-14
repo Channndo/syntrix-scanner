@@ -224,10 +224,12 @@ class Settings:
     # MIRA in-app assistant (Ollama LLM proxy — browser never talks to Ollama directly).
     # Production: set OLLAMA_BASE_URL to an address the API process can reach (not 127.0.0.1 unless Ollama is
     # on the same machine). Example: http://100.x.x.x:11434 (Tailscale), https://ollama.internal/api,
-    # or a private hostname in the same VPC. Pull the model on that host: `ollama pull llama3:8b`.
+    # or a private hostname in the same VPC (e.g. Hetzner). Pull the tag you set in OLLAMA_MODEL on that host.
+    # Default model when OLLAMA_MODEL is unset: small CPU-friendly tag used on typical Hetzner VPS layouts;
+    # override to a larger tag (e.g. llama3.1:8b) when you have the RAM and want higher MIRA quality.
     mira_enabled: bool = _to_bool(os.getenv("SYNTRIX_MIRA_ENABLED"), True)
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/")
-    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3:8b").strip()
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2:1b").strip()
     ollama_temperature: float = _float_env("OLLAMA_TEMPERATURE", 0.4)
     # Optional bearer for Ollama behind nginx/reverse proxy auth (not used by stock Ollama).
     ollama_api_key: str = os.getenv("OLLAMA_API_KEY", "").strip()
