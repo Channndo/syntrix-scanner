@@ -29,6 +29,9 @@ _GUEST_SUBMIT_LOCK = threading.Lock()
 _GUEST_SUBMIT_HITS: Dict[str, List[float]] = {}
 _GUEST_SUBMIT_WINDOW_SEC = 3600.0
 
+_API_SURFACE_LOCK = threading.Lock()
+_API_SURFACE_HITS: Dict[str, List[float]] = {}
+
 
 def client_ip(request: Request) -> str:
     """Best-effort client IP: honor ``X-Forwarded-For`` (Render/proxies) then fall back to socket."""
@@ -71,6 +74,35 @@ def guest_scan_submit_rate_limit_or_429(ip: str) -> None:
                 detail="Too many guest scan attempts from this network. Try again later or sign in.",
             )
         hits.append(now)
+
+
+def api_surface_rate_hit(ip: str, path: str, window_sec: float, cap: int) -> tuple[int, int, bool]:
+    """
+    Sliding-window counter per client IP for the whole HTTP API (separate from auth/MIRA buckets).
+
+    Returns ``(limit, remaining, allowed)``. When ``allowed`` is False, return 429 without calling
+    the route. ``GET /health`` is not counted so orchestrator polls do not burn the budget.
+
+    Emits standard ``X-RateLimit-*`` headers on successful responses so outbound scanners (RATE-01)
+    see throttling signals on api.syntrix.solutions-style deployments.
+    """
+    if cap <= 0 or window_sec <= 0:
+        return max(1, cap), max(1, cap), True
+    path_norm = (path or "").split("?", 1)[0].rstrip("/") or "/"
+    if path_norm == "/health":
+        return cap, cap, True
+
+    now = time.monotonic()
+    with _API_SURFACE_LOCK:
+        hits = _API_SURFACE_HITS.setdefault(ip, [])
+        cutoff = now - float(window_sec)
+        while hits and hits[0] < cutoff:
+            hits.pop(0)
+        if len(hits) >= cap:
+            return cap, 0, False
+        hits.append(now)
+        remaining = max(0, cap - len(hits))
+        return cap, remaining, True
 
 
 def mira_rate_limit_or_429(ip: str, max_requests: int, window_sec: float) -> None:

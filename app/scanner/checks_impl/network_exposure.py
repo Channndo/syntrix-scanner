@@ -24,6 +24,12 @@ MCP_CONTENT_SIGNALS = [
 MCP_PATTERN = re.compile("|".join(MCP_CONTENT_SIGNALS), re.IGNORECASE)
 
 
+def _baseline_looks_like_syntrix_scanner_api(baseline_text: str) -> bool:
+    """True when the target is our own REST root JSON (users often paste api.syntrix.solutions as MCP)."""
+    t = (baseline_text or "").lower()
+    return '"syntrix-scanner"' in t and '"service"' in t
+
+
 async def _probe_mcp_paths(ctx: CheckContext) -> tuple[bool, str]:
     """Try common MCP paths. Returns (looks_like_mcp, evidence_string)."""
     base = ctx.target.rstrip("/")
@@ -154,7 +160,7 @@ async def check_network_exposure(ctx: CheckContext):
         ct = (baseline.headers.get("content-type") or "").lower()
         sniff = baseline_text.lstrip().lower()
         looks_like_webpage = "text/html" in ct or sniff.startswith(("<!doctype html", "<html"))
-        if not looks_like_webpage:
+        if not looks_like_webpage and not _baseline_looks_like_syntrix_scanner_api(baseline_text):
             out.append(CheckOutcome(
                 check_id="NET-01-NOPROTO",
                 title="No MCP protocol signals detected at target",

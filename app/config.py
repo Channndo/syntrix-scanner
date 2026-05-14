@@ -265,8 +265,13 @@ class Settings:
         not bool(os.getenv("RENDER")),
     )
 
-    # HTTP hardening — set SYNTRIX_HSTS_MAX_AGE on prod TLS (e.g. 31536000); 0 omits HSTS.
-    security_hsts_max_age: int = _int_env("SYNTRIX_HSTS_MAX_AGE", 0)
+    # HTTP hardening — HSTS is only sent when the request is HTTPS (see SecurityHeadersMiddleware).
+    # Default one year; set SYNTRIX_HSTS_MAX_AGE=0 to omit (e.g. rare plain-HTTP dev proxies).
+    security_hsts_max_age: int = _int_env("SYNTRIX_HSTS_MAX_AGE", 31536000)
+    # Per-IP sliding window for all routes (process-local). Adds X-RateLimit-* headers; 429 when exceeded.
+    # Skips counting OPTIONS and GET /health. Tunable for multi-tenant abuse vs. scanner RATE-01 signal.
+    api_rate_window_sec: float = _float_env("SYNTRIX_API_RATE_WINDOW_SECONDS", 60.0)
+    api_rate_max_requests: int = _int_env("SYNTRIX_API_RATE_MAX_REQUESTS", 300)
     # Max JSON body for POST /api/mira/chat (Content-Length guard before JSON parse).
     mira_max_request_body_bytes: int = _int_env("SYNTRIX_MIRA_MAX_BODY_BYTES", 12 * 1024 * 1024)
     # Guest scan POSTs per client IP per rolling hour (in addition to per-guest_id daily cap).

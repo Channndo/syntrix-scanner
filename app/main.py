@@ -43,7 +43,11 @@ from app.routes_mira import router as mira_router
 from app.routes_team import router as team_router
 from app.schemas_scan import ScanSubmit, ScanSubmitResponse, ScanStatusResponse
 from app.scan_runner import run_scan_background
-from app.security_middleware import MiraBodySizeLimitMiddleware, SecurityHeadersMiddleware
+from app.security_middleware import (
+    ApiRateLimitMiddleware,
+    MiraBodySizeLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
 
 _doc_base = "/docs" if settings.api_docs_enabled else None
 app = FastAPI(
@@ -65,6 +69,7 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Accept"],
 )
 
+app.add_middleware(ApiRateLimitMiddleware)
 app.add_middleware(MiraBodySizeLimitMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 if _trusted:
