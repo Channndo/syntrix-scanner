@@ -255,9 +255,18 @@ async def _ollama_chat_stream_aggregate(
                     upstream_ms=elapsed_ms,
                     error_body_chars=len(raw),
                 )
+                low = raw.lower()
+                detail = f"Model server error: {raw}"
+                if "not found" in low and "model" in low:
+                    detail = (
+                        f"Ollama rejected the configured model name (OLLAMA_MODEL={model_fallback!r}). "
+                        "That tag is not installed on the Ollama host. Either run "
+                        f"`ollama pull {model_fallback}` there, or set OLLAMA_MODEL to a name from `ollama list` "
+                        f"(for example llama3.2:1b on a small VPS). Raw upstream: {raw}"
+                    )
                 raise HTTPException(
                     status_code=502,
-                    detail=f"Model server error: {raw}",
+                    detail=detail,
                 )
             async for line in r.aiter_lines():
                 line = (line or "").strip()
