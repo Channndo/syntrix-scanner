@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 from app.config import settings
 from app.scanner.checks import REGISTERED_CHECKS, Check, CheckContext, CheckOutcome
+from app.scanner.redirect_safe_client import RedirectSafeAsyncClient
 
 
 @dataclass
@@ -107,9 +108,10 @@ class ScanEngine:
             timeout=self.timeout,
             limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
             headers={"User-Agent": settings.probe_user_agent},
-            follow_redirects=True,
+            follow_redirects=False,
             verify=True,
-        ) as client:
+        ) as inner:
+            client = RedirectSafeAsyncClient(inner, _is_target_allowed)
             ctx = CheckContext(
                 target=req.target,
                 scan_type=req.scan_type,

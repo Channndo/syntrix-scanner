@@ -7,17 +7,16 @@ not editing a central switch statement nobody owns.
 
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable, Any
-import httpx
 
 
 @dataclass
 class CheckContext:
-    """Shared probe context — one httpx client, one target, optional caller auth header."""
+    """Shared probe context — one HTTP client (``httpx.AsyncClient`` or redirect-safe wrapper)."""
 
     target: str
     scan_type: str
     depth: str
-    client: httpx.AsyncClient
+    client: Any
     auth_header: Optional[str] = None
 
 
