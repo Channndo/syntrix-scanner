@@ -5,7 +5,7 @@ single source of truth; defaults try to be safe in prod (auth on, billing off un
 """
 
 import os
-from typing import List, Optional
+from typing import FrozenSet, List, Optional, Set
 
 
 def _default_sqlite_path() -> str:
@@ -58,6 +58,79 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+# Non-HTTP / high-abuse ports — SSRF scanners should not pivot the worker into mail, DBs, Docker, etc.
+_DEFAULT_FORBIDDEN_PROBE_PORTS: FrozenSet[int] = frozenset({
+    22,
+    23,
+    25,
+    53,
+    110,
+    111,
+    135,
+    139,
+    143,
+    445,
+    465,
+    587,
+    636,
+    993,
+    995,
+    1433,
+    1521,
+    1723,
+    2049,
+    2181,
+    2375,
+    2376,
+    3128,
+    3306,
+    3389,
+    5432,
+    5631,
+    5632,
+    5900,
+    5984,
+    6379,
+    7001,
+    8086,
+    8088,
+    8529,
+    9042,
+    9200,
+    9300,
+    11211,
+    15672,
+    27017,
+    27018,
+})
+
+
+def _parse_forbidden_probe_ports() -> FrozenSet[int]:
+    """
+    Comma-separated port ints in ``SYNTRIX_PROBE_FORBIDDEN_PORTS``.
+
+    If the variable is **set** to an empty string, port blocking is disabled. If **unset**, the
+    built-in high-risk list above is used.
+    """
+    raw = os.getenv("SYNTRIX_PROBE_FORBIDDEN_PORTS")
+    if raw is not None:
+        if not raw.strip():
+            return frozenset()
+        out: Set[int] = set()
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                p = int(part)
+            except ValueError:
+                continue
+            if 0 < p < 65536:
+                out.add(p)
+        return frozenset(out)
+    return _DEFAULT_FORBIDDEN_PROBE_PORTS
+
+
 class Settings:
     """
     Live config snapshot — instantiated at import time from the process environment.
@@ -83,6 +156,10 @@ class Settings:
     # Max bytes read from any single outbound probe response (chunked bodies included). Caps memory
     # and wall time when a target returns a huge or pathological body.
     probe_max_response_bytes: int = _int_env("SYNTRIX_PROBE_MAX_RESPONSE_BYTES", 10 * 1024 * 1024)
+    # Block explicit URL ports that are almost never legitimate HTTP scan targets but are common
+    # SSRF pivots (Redis, SMTP, Docker, …). Default list when unset; set SYNTRIX_PROBE_FORBIDDEN_PORTS=
+    # (empty) to disable, or to a comma list to replace the defaults.
+    probe_forbidden_ports: FrozenSet[int] = _parse_forbidden_probe_ports()
 
     # Safety: never probe these target patterns even if requested
     forbidden_target_patterns: List[str] = [

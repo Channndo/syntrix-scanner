@@ -22,6 +22,26 @@ def test_only_http_https_schemes():
     assert _is_target_allowed("ws://example.com/") is False
 
 
+def test_high_risk_ports_blocked_by_default():
+    assert _is_target_allowed("https://example.com:6379/") is False
+    assert _is_target_allowed("http://example.com:25/") is False
+    assert _is_target_allowed("https://example.com:5432/x") is False
+
+
+def test_common_web_ports_not_in_blocklist():
+    assert _is_target_allowed("http://example.com:8080/") is True
+    assert _is_target_allowed("https://example.com:8443/") is True
+
+
+def test_default_https_port_implicit():
+    assert _is_target_allowed("https://example.com/path") is True
+
+
+def test_forbidden_ports_can_be_cleared(monkeypatch):
+    monkeypatch.setattr(settings, "probe_forbidden_ports", frozenset())
+    assert _is_target_allowed("https://example.com:6379/") is True
+
+
 def test_rfc1918_literals_blocked_by_default():
     assert _is_target_allowed("http://10.0.0.1/") is False
     assert _is_target_allowed("http://192.168.1.1/") is False

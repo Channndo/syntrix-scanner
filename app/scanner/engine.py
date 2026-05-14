@@ -81,13 +81,16 @@ def _is_target_allowed(target: str) -> bool:
     Safety rail: no cloud metadata URLs, no loopback, no RFC1918 literals by default, unless env
     flags say otherwise.
 
-    Literal IPs in the URL are checked here. Hostname policy (DNS) is enforced in ``ScanEngine.run``
+    Literal IPs in the URL are checked here. Explicit high-risk ports (``Settings.probe_forbidden_ports`` /
+    ``SYNTRIX_PROBE_FORBIDDEN_PORTS``) are rejected. Hostname policy (DNS) is enforced in ``ScanEngine.run``
     via ``resolve_scan_host`` plus ``DnsPinnedAsyncClient`` so probes cannot TOCTOU to a different
     address at connect time.
     """
     parsed = urlparse(target)
     scheme = (parsed.scheme or "").lower()
     if scheme not in ("http", "https"):
+        return False
+    if parsed.port is not None and int(parsed.port) in settings.probe_forbidden_ports:
         return False
     host = (parsed.hostname or "").lower()
     if not host:
