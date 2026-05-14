@@ -101,3 +101,27 @@ def test_mira_chat_oversized_post_sets_cache_control_no_store():
     )
     assert r.status_code == 413
     assert "no-store" in (r.headers.get("cache-control") or "").lower()
+
+
+def test_scrub_mira_false_refusal_on_digit_followup():
+    from app.routes_mira import _scrub_mira_likely_false_refusal
+
+    bad = "I can't provide information on how to access child pornography."
+    out = _scrub_mira_likely_false_refusal(bad, "2?", request_id="testscrub1")
+    assert "child pornography" not in out.lower()
+    assert "critical" in out.lower() and "high" in out.lower()
+
+
+def test_scrub_mira_leaves_unrelated_replies():
+    from app.routes_mira import _scrub_mira_likely_false_refusal
+
+    ok = "Syntrix uses critical, high, medium, low, and info for each finding."
+    assert _scrub_mira_likely_false_refusal(ok, "2?") == ok
+
+
+def test_scrub_mira_skips_when_last_user_too_long():
+    from app.routes_mira import _scrub_mira_likely_false_refusal
+
+    bad = "I can't provide information on how to access child pornography."
+    long_u = "x" * 201
+    assert _scrub_mira_likely_false_refusal(bad, long_u) == bad

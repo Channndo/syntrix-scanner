@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -162,6 +163,63 @@ def _safe_public_base(url: str) -> str:
 
 
 _MIRA_MAX_REPLY_CHARS = 48_000
+
+# Some small local models misfire on very short follow-ups (e.g. "2?") and emit unrelated
+# safety refusals. Only scrub when the reply matches these markers *and* the last user turn
+# looks like normal Syntrix / severity chat — never log user content.
+_FALSE_REFUSAL_MARKERS = (
+    "child pornography",
+    "child sexual abuse material",
+    "how to access child",
+)
+
+
+def _last_client_user_content(messages: List[MiraChatMessage]) -> str:
+    for m in reversed(messages):
+        if m.role == "user":
+            return m.content
+    return ""
+
+
+def _scrub_mira_likely_false_refusal(reply: str, last_user: str, *, request_id: str = "") -> str:
+    if not reply:
+        return reply
+    low = reply.lower()
+    if not any(marker in low for marker in _FALSE_REFUSAL_MARKERS):
+        return reply
+    u = _sanitize_mira_text((last_user or "").strip())
+    if len(u) > 200:
+        return reply
+    low_u = u.lower()
+    benign = (
+        len(u) <= 32,
+        bool(re.fullmatch(r"\d{1,2}\s*\??", u)),
+        "syntrix" in low_u,
+        "severity" in low_u,
+        "finding" in low_u,
+        "scan" in low_u,
+        "vulnerab" in low_u,
+        "remediation" in low_u,
+        ("what" in low_u and "?" in u),
+        ("how" in low_u and "?" in u and len(u) < 80),
+    )
+    if not any(benign):
+        return reply
+    mira_obs(
+        "mira_reply_scrubbed_false_refusal",
+        request_id=request_id or None,
+        last_user_len=len(u),
+    )
+    return (
+        "Sorry—that last answer was incorrect (the model misfired on a short follow-up; it is not "
+        "Syntrix policy).\n\n"
+        "If you were asking about **severity or scan results**: Syntrix findings use these labels, "
+        "from most serious to least: **critical → high → medium → low → info**. "
+        'A message like "2?" after a list usually means the **second item** or roughly **high**—say '
+        "which you meant and I will answer precisely.\n\n"
+        "If you meant **high**: treat it as important; validate quickly, then remediate or accept "
+        "risk with a clear owner."
+    )
 
 
 async def _ollama_chat_stream_aggregate(
@@ -423,6 +481,9 @@ async def mira_chat(
             first_token_ms=upstream_metrics.get("first_token_ms"),
         )
         raise HTTPException(status_code=502, detail="Empty reply from model.")
+
+    last_user = _last_client_user_content(payload.messages)
+    content = _scrub_mira_likely_false_refusal(content, last_user, request_id=request_id)
 
     if len(content) > _MIRA_MAX_REPLY_CHARS:
         tail = "\n\n[Reply truncated by server for size limits.]"
