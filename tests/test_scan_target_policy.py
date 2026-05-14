@@ -20,6 +20,9 @@ def test_public_literal_ips_allowed():
 def test_only_http_https_schemes():
     assert _is_target_allowed("ftp://example.com/") is False
     assert _is_target_allowed("ws://example.com/") is False
+    assert _is_target_allowed("file:///etc/passwd") is False
+    assert _is_target_allowed("gopher://127.0.0.1:6379/_") is False
+    assert _is_target_allowed("dict://127.0.0.1:6379/info") is False
 
 
 def test_high_risk_ports_blocked_by_default():

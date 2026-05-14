@@ -3,6 +3,7 @@
 import asyncio
 
 import httpx
+import pytest
 
 from app.scanner.engine import _is_target_allowed
 from app.scanner.redirect_safe_client import RedirectSafeAsyncClient
@@ -157,3 +158,40 @@ async def _same_host_redirect_keeps_authorization():
 
 def test_same_host_redirect_keeps_authorization():
     _run(_same_host_redirect_keeps_authorization())
+
+
+async def _unsafe_scheme_never_calls_transport():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"transport should not be used: {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, follow_redirects=False) as inner:
+        c = RedirectSafeAsyncClient(inner, lambda _u: True)
+        with pytest.raises(httpx.UnsupportedProtocol, match="only http"):
+            await c.get("file:///etc/passwd")
+
+
+def test_unsafe_scheme_never_calls_transport_even_if_allowed_predicate_true():
+    _run(_unsafe_scheme_never_calls_transport())
+
+
+async def _redirect_to_unsafe_scheme_returns_redirect_response():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        u = str(request.url).rstrip("/")
+        if u == "https://example.com/a":
+            return httpx.Response(302, headers={"Location": "gopher://127.0.0.1:70/1"})
+        raise AssertionError(f"unexpected request {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, follow_redirects=False) as inner:
+        c = RedirectSafeAsyncClient(inner, _is_target_allowed)
+        r = await c.get("https://example.com/a")
+    assert r.status_code == 302
+    assert len(seen) == 1
+
+
+def test_redirect_to_unsafe_scheme_does_not_follow():
+    _run(_redirect_to_unsafe_scheme_returns_redirect_response())

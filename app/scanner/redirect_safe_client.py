@@ -7,6 +7,9 @@ cloud metadata, loopback, or another forbidden host. We cap hops and re-apply th
 
 Cross-host redirects drop ``Authorization`` / ``Cookie`` / ``Proxy-Authorization`` (and httpx
 ``auth`` / ``cookies`` kwargs) so a malicious target cannot harvest credentials from the scanner.
+
+Only ``http`` and ``https`` URLs are ever passed to the inner client — ``file:``, ``gopher:``,
+``dict:``, etc. are rejected even if ``is_allowed`` is misconfigured.
 """
 
 from __future__ import annotations
@@ -15,6 +18,8 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import urljoin, urlparse
 
 import httpx
+
+from app.scanner.probe_url_policy import is_probe_scheme_allowed
 
 # Enough for typical http→https and trailing-slash chains; stops redirect loops cheaply.
 _MAX_SCAN_REDIRECTS = 8
@@ -73,6 +78,14 @@ class RedirectSafeAsyncClient:
         last: Optional[httpx.Response] = None
 
         for _ in range(_MAX_SCAN_REDIRECTS + 1):
+            if not is_probe_scheme_allowed(current):
+                if last is not None:
+                    return last
+                raise httpx.UnsupportedProtocol(
+                    "Syntrix scanner probes only http:// and https:// URLs "
+                    f"(got scheme {urlparse(current).scheme!r})."
+                )
+
             if not self._is_allowed(current):
                 if last is not None:
                     return last
