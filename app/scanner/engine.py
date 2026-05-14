@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from app.config import settings
 from app.scanner.checks import REGISTERED_CHECKS, Check, CheckContext, CheckOutcome
+from app.scanner.dns_pin import DnsPinnedAsyncClient, resolve_scan_host
 from app.scanner.redirect_safe_client import RedirectSafeAsyncClient
 
 
@@ -79,7 +80,9 @@ def _is_target_allowed(target: str) -> bool:
     Safety rail: no cloud metadata URLs, no loopback, no RFC1918 literals by default, unless env
     flags say otherwise.
 
-    Hostnames that resolve to private IPs are not DNS-checked here — only literal IPs in the URL.
+    Literal IPs in the URL are checked here. Hostname policy (DNS) is enforced in ``ScanEngine.run``
+    via ``resolve_scan_host`` plus ``DnsPinnedAsyncClient`` so probes cannot TOCTOU to a different
+    address at connect time.
     """
     parsed = urlparse(target)
     host = (parsed.hostname or "").lower()
@@ -129,6 +132,40 @@ class ScanEngine:
                 risk_tier="Low",
             )
 
+        parsed_tgt = urlparse(req.target)
+        orig_host = parsed_tgt.hostname or ""
+        validated_remote_addrs: List[str] = []
+        initial_pins: Dict[str, str] = {}
+        if orig_host:
+            try:
+                ipaddress.ip_address(orig_host.split("%", 1)[0])
+                validated_remote_addrs = [orig_host]
+            except ValueError:
+                validated_remote_addrs = await resolve_scan_host(orig_host)
+                if not validated_remote_addrs:
+                    return ScanResult(
+                        findings=[{
+                            "check_id": "TARGET_DNS_BLOCKED",
+                            "title": "Target hostname did not resolve to a permitted address",
+                            "severity": "info",
+                            "description": (
+                                "The hostname has no A/AAAA records that pass scanner policy "
+                                "(private, link-local, loopback, and multicast addresses are rejected "
+                                "unless explicitly allowed by deployment env)."
+                            ),
+                            "evidence": req.target,
+                            "remediation": (
+                                "Use a public DNS name that resolves to routable addresses, or set "
+                                "SYNTRIX_ALLOW_PRIVATE_NETWORK_SCANS / SYNTRIX_ALLOW_LOCALHOST only "
+                                "in trusted internal deployments."
+                            ),
+                            "owasp": None,
+                        }],
+                        risk_score=100,
+                        risk_tier="Low",
+                    )
+                initial_pins = {orig_host.lower(): validated_remote_addrs[0]}
+
         # Filter checks by depth
         active_checks = self._select_checks(req.depth, req.scan_type)
         result = ScanResult()
@@ -140,13 +177,15 @@ class ScanEngine:
             follow_redirects=False,
             verify=True,
         ) as inner:
-            client = RedirectSafeAsyncClient(inner, _is_target_allowed)
+            pinned = DnsPinnedAsyncClient(inner, initial_host_pins=initial_pins or None)
+            client = RedirectSafeAsyncClient(pinned, _is_target_allowed)
             ctx = CheckContext(
                 target=req.target,
                 scan_type=req.scan_type,
                 depth=req.depth,
                 client=client,
                 auth_header=req.auth_header,
+                validated_remote_addrs=validated_remote_addrs,
             )
 
             total = len(active_checks) if active_checks else 1

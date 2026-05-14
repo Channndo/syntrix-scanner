@@ -18,6 +18,9 @@ class CheckContext:
     depth: str
     client: Any
     auth_header: Optional[str] = None
+    #: Ordered A/AAAA (policy-filtered) for the submitted target hostname — probe each with
+    #: ``from app.scanner.dns_pin import build_pinned_request_parts`` when you need full multi-IP coverage (default client pins first).
+    validated_remote_addrs: List[str] = field(default_factory=list)
 
 
 @dataclass
