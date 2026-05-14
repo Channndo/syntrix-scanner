@@ -58,6 +58,20 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def resolved_ollama_model_from_env() -> str:
+    """
+    Read ``OLLAMA_MODEL`` for MIRA. Remaps one stale value that often appears on Render but is not
+    pulled on typical small Hetzner Ollama hosts (where ``llama3.2:1b`` is standard). Opt out with
+    ``SYNTRIX_DISABLE_OLLAMA_MODEL_AUTO_CORRECT=true`` if you truly run ``llama3.1:8b`` and have pulled it.
+    """
+    raw = (os.getenv("OLLAMA_MODEL") or "llama3.2:1b").strip() or "llama3.2:1b"
+    if _to_bool(os.getenv("SYNTRIX_DISABLE_OLLAMA_MODEL_AUTO_CORRECT"), False):
+        return raw
+    if raw.lower() == "llama3.1:8b":
+        return "llama3.2:1b"
+    return raw
+
+
 # Non-HTTP / high-abuse ports — SSRF scanners should not pivot the worker into mail, DBs, Docker, etc.
 _DEFAULT_FORBIDDEN_PROBE_PORTS: FrozenSet[int] = frozenset({
     22,
@@ -225,11 +239,11 @@ class Settings:
     # Production: set OLLAMA_BASE_URL to an address the API process can reach (not 127.0.0.1 unless Ollama is
     # on the same machine). Example: http://100.x.x.x:11434 (Tailscale), https://ollama.internal/api,
     # or a private hostname in the same VPC (e.g. Hetzner). Pull the tag you set in OLLAMA_MODEL on that host.
-    # Default model when OLLAMA_MODEL is unset: small CPU-friendly tag used on typical Hetzner VPS layouts;
-    # override to a larger tag (e.g. llama3.1:8b) when you have the RAM and want higher MIRA quality.
+    # Default model when OLLAMA_MODEL is unset: small CPU-friendly tag used on typical Hetzner VPS layouts.
+    # ``llama3.1:8b`` in env is auto-remapped to ``llama3.2:1b`` unless SYNTRIX_DISABLE_OLLAMA_MODEL_AUTO_CORRECT=true.
     mira_enabled: bool = _to_bool(os.getenv("SYNTRIX_MIRA_ENABLED"), True)
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/")
-    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2:1b").strip()
+    ollama_model: str = resolved_ollama_model_from_env()
     ollama_temperature: float = _float_env("OLLAMA_TEMPERATURE", 0.4)
     # Optional bearer for Ollama behind nginx/reverse proxy auth (not used by stock Ollama).
     ollama_api_key: str = os.getenv("OLLAMA_API_KEY", "").strip()
