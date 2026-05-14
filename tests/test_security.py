@@ -20,6 +20,7 @@ def _reset_db() -> None:
         store._conn.execute("DELETE FROM password_history")
         store._conn.execute("DELETE FROM password_accounts")
         store._conn.execute("DELETE FROM guest_daily_scans")
+        store._conn.execute("DELETE FROM mira_anonymous_daily")
         store._conn.execute("DELETE FROM users")
         store._conn.execute("DELETE FROM waitlist_leads")
     with _RATE_LOCK:

@@ -239,6 +239,9 @@ class Settings:
     # MIRA-only sliding window (separate bucket from auth endpoints).
     mira_rate_window_sec: float = _float_env("MIRA_RATE_WINDOW_SECONDS", 60.0)
     mira_rate_max_requests: int = _int_env("MIRA_RATE_MAX_REQUESTS", 12)
+    # Anonymous MIRA (no Bearer): max POST /api/mira/chat per client IP per UTC calendar day.
+    # 0 = no daily cap (only the sliding window above applies). Signed-in users are not counted here.
+    mira_anonymous_max_per_utc_day: int = _int_env("SYNTRIX_MIRA_ANONYMOUS_MAX_PER_UTC_DAY", 20)
     # Interactive OpenAPI (Swagger/Redoc/OpenAPI JSON). Default off on Render to reduce casual
     # abuse of documented endpoints from the browser; enable with SYNTRIX_ENABLE_API_DOCS=true.
     api_docs_enabled: bool = _to_bool(

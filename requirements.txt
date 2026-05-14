@@ -8,4 +8,3 @@ passlib[argon2]==1.7.4
 email-validator==2.2.0
 stripe==12.1.0
 pytest==8.3.3
-pypdf==5.1.0

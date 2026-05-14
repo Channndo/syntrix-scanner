@@ -133,6 +133,7 @@ class _SQLiteStore:
         self._ensure_password_history_table()
         self._ensure_guest_scan_columns()
         self._ensure_guest_daily_table()
+        self._ensure_mira_anonymous_daily_table()
         self._ensure_scanner_build_column()
 
     def _ensure_scanner_build_column(self) -> None:
@@ -162,6 +163,58 @@ class _SQLiteStore:
                 )
                 """
             )
+
+    def _ensure_mira_anonymous_daily_table(self) -> None:
+        """Per-IP UTC-day counter for anonymous MIRA chat (Bearer absent)."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS mira_anonymous_daily (
+                    client_ip TEXT NOT NULL,
+                    day_utc TEXT NOT NULL,
+                    request_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (client_ip, day_utc)
+                )
+                """
+            )
+
+    def try_acquire_mira_anonymous_daily_chat(self, client_ip: str) -> bool:
+        """
+        Increment anonymous MIRA usage for this IP for the current UTC day if under the configured cap.
+
+        Returns False when the daily cap is already reached (caller should 429 without calling Ollama).
+        When ``SYNTRIX_MIRA_ANONYMOUS_MAX_PER_UTC_DAY`` is 0, always returns True (no daily cap).
+        """
+        limit = max(0, int(settings.mira_anonymous_max_per_utc_day))
+        if limit <= 0:
+            return True
+        key = (client_ip or "unknown").strip()[:256]
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT request_count FROM mira_anonymous_daily WHERE client_ip = ? AND day_utc = ?",
+                (key, day),
+            ).fetchone()
+            used = int(row[0]) if row else 0
+            if used >= limit:
+                return False
+            if row:
+                self._conn.execute(
+                    """
+                    UPDATE mira_anonymous_daily SET request_count = request_count + 1
+                    WHERE client_ip = ? AND day_utc = ?
+                    """,
+                    (key, day),
+                )
+            else:
+                self._conn.execute(
+                    """
+                    INSERT INTO mira_anonymous_daily (client_ip, day_utc, request_count)
+                    VALUES (?, ?, 1)
+                    """,
+                    (key, day),
+                )
+        return True
 
     def _ensure_user_name_columns(self) -> None:
         with self._lock, self._conn:
