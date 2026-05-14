@@ -80,6 +80,9 @@ class Settings:
     max_scan_seconds: int = int(os.getenv("SYNTRIX_MAX_SCAN_SECONDS", "600"))
     max_concurrent_probes: int = int(os.getenv("SYNTRIX_MAX_CONCURRENT_PROBES", "10"))
     probe_timeout_seconds: int = int(os.getenv("SYNTRIX_PROBE_TIMEOUT", "10"))
+    # Max bytes read from any single outbound probe response (chunked bodies included). Caps memory
+    # and wall time when a target returns a huge or pathological body.
+    probe_max_response_bytes: int = _int_env("SYNTRIX_PROBE_MAX_RESPONSE_BYTES", 10 * 1024 * 1024)
 
     # Safety: never probe these target patterns even if requested
     forbidden_target_patterns: List[str] = [

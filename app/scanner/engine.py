@@ -16,6 +16,7 @@ from app.config import settings
 from app.scanner.checks import REGISTERED_CHECKS, Check, CheckContext, CheckOutcome
 from app.scanner.dns_pin import DnsPinnedAsyncClient, resolve_scan_host
 from app.scanner.redirect_safe_client import RedirectSafeAsyncClient
+from app.scanner.response_cap_transport import ResponseCapTransport
 
 
 @dataclass
@@ -85,6 +86,9 @@ def _is_target_allowed(target: str) -> bool:
     address at connect time.
     """
     parsed = urlparse(target)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return False
     host = (parsed.hostname or "").lower()
     if not host:
         return False
@@ -170,12 +174,24 @@ class ScanEngine:
         active_checks = self._select_checks(req.depth, req.scan_type)
         result = ScanResult()
 
+        limits = httpx.Limits(max_connections=32, max_keepalive_connections=16)
+        base_transport = httpx.AsyncHTTPTransport(
+            verify=True,
+            trust_env=True,
+            http1=True,
+            http2=False,
+            limits=limits,
+        )
+        capped_transport = ResponseCapTransport(
+            base_transport, settings.probe_max_response_bytes
+        )
         async with httpx.AsyncClient(
+            transport=capped_transport,
             timeout=self.timeout,
-            limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
+            limits=limits,
             headers={"User-Agent": settings.probe_user_agent},
             follow_redirects=False,
-            verify=True,
+            verify=False,
         ) as inner:
             pinned = DnsPinnedAsyncClient(inner, initial_host_pins=initial_pins or None)
             client = RedirectSafeAsyncClient(pinned, _is_target_allowed)

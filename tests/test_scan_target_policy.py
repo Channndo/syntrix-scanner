@@ -17,6 +17,11 @@ def test_public_literal_ips_allowed():
     assert _is_target_allowed("http://1.1.1.1/path") is True
 
 
+def test_only_http_https_schemes():
+    assert _is_target_allowed("ftp://example.com/") is False
+    assert _is_target_allowed("ws://example.com/") is False
+
+
 def test_rfc1918_literals_blocked_by_default():
     assert _is_target_allowed("http://10.0.0.1/") is False
     assert _is_target_allowed("http://192.168.1.1/") is False
