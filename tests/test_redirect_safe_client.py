@@ -94,3 +94,66 @@ async def _post_303_drops_json_body():
 
 def test_post_303_drops_json_body():
     _run(_post_303_drops_json_body())
+
+
+async def _cross_host_redirect_strips_authorization():
+    seen: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        u = str(request.url).rstrip("/")
+        auth = request.headers.get("authorization")
+        seen.append((u, auth))
+        if u == "https://good.com/start":
+            return httpx.Response(302, headers={"Location": "https://evil.com/here"})
+        if u == "https://evil.com/here":
+            return httpx.Response(200, text="ok")
+        raise AssertionError(u)
+
+    def allows(url: str) -> bool:
+        u = str(url).rstrip("/")
+        return u.startswith("https://good.com") or u.startswith("https://evil.com")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, follow_redirects=False) as inner:
+        c = RedirectSafeAsyncClient(inner, allows)
+        r = await c.get(
+            "https://good.com/start",
+            headers={"Authorization": "Bearer SECRET"},
+        )
+    assert r.status_code == 200
+    assert len(seen) == 2
+    assert seen[0] == ("https://good.com/start", "Bearer SECRET")
+    assert seen[1][0].rstrip("/") == "https://evil.com/here"
+    assert seen[1][1] is None
+
+
+def test_cross_host_redirect_strips_authorization():
+    _run(_cross_host_redirect_strips_authorization())
+
+
+async def _same_host_redirect_keeps_authorization():
+    seen: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        u = str(request.url).rstrip("/")
+        auth = request.headers.get("authorization")
+        seen.append((u, auth))
+        if u == "https://example.com/start":
+            return httpx.Response(302, headers={"Location": "https://example.com/final"})
+        if u == "https://example.com/final":
+            return httpx.Response(200, text="ok")
+        raise AssertionError(u)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, follow_redirects=False) as inner:
+        c = RedirectSafeAsyncClient(inner, _is_target_allowed)
+        r = await c.get(
+            "https://example.com/start",
+            headers={"Authorization": "Bearer X"},
+        )
+    assert r.status_code == 200
+    assert seen[0][1] == "Bearer X" and seen[1][1] == "Bearer X"
+
+
+def test_same_host_redirect_keeps_authorization():
+    _run(_same_host_redirect_keeps_authorization())

@@ -4,17 +4,46 @@ Manual redirect following for outbound scan probes.
 ``httpx`` with ``follow_redirects=True`` only validates the *first* URL — a server can 302 to
 cloud metadata, loopback, or another forbidden host. We cap hops and re-apply the same
 ``is_allowed`` predicate on every absolute URL before issuing the next request.
+
+Cross-host redirects drop ``Authorization`` / ``Cookie`` / ``Proxy-Authorization`` (and httpx
+``auth`` / ``cookies`` kwargs) so a malicious target cannot harvest credentials from the scanner.
 """
 
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
 # Enough for typical http→https and trailing-slash chains; stops redirect loops cheaply.
 _MAX_SCAN_REDIRECTS = 8
+
+# Header names compared case-insensitively — anything that commonly carries secrets across origins.
+_STRIP_ON_CROSS_HOST = frozenset({
+    "authorization",
+    "cookie",
+    "cookie2",
+    "proxy-authorization",
+})
+
+
+def _host_key(url: str) -> str:
+    return (urlparse(url).hostname or "").lower()
+
+
+def _strip_cross_host_secrets(kw: Dict[str, Any]) -> None:
+    """Remove credential-bearing fields before following a redirect to another host."""
+    kw.pop("auth", None)
+    kw.pop("cookies", None)
+    raw = kw.get("headers")
+    if not raw:
+        return
+    h = httpx.Headers(raw)
+    for name in list(h.keys()):
+        if name.lower() in _STRIP_ON_CROSS_HOST:
+            del h[name]
+    kw["headers"] = h
 
 
 class RedirectSafeAsyncClient:
@@ -68,6 +97,9 @@ class RedirectSafeAsyncClient:
                 m = "GET"
                 for drop in ("content", "data", "json", "files"):
                     kw.pop(drop, None)
+
+            if _host_key(current) != _host_key(next_url):
+                _strip_cross_host_secrets(kw)
 
             current = next_url
 
