@@ -93,6 +93,10 @@ class Settings:
 
     # Whether to allow scanning of localhost (set true only for self-test)
     allow_localhost_scans: bool = _to_bool(os.getenv("SYNTRIX_ALLOW_LOCALHOST"), False)
+    # RFC1918 / ULA-style private literals (10/8, 172.16/12, 192.168/16, etc.) — off by default so a
+    # public scanner cannot be used to map your VPC from inside the cloud. Enable only when the
+    # worker is in a trusted network and you intentionally scan private staging URLs.
+    allow_private_network_scans: bool = _to_bool(os.getenv("SYNTRIX_ALLOW_PRIVATE_NETWORK_SCANS"), False)
 
     # User agent for outbound probes
     probe_user_agent: str = "Syntrix-Scanner/0.1 (+https://syntrix.solutions/scanner)"

@@ -8,6 +8,7 @@ outcomes into a risk score humans can argue about over coffee.
 from dataclasses import dataclass, field
 from typing import Callable, List, Dict, Any, Optional
 import asyncio
+import ipaddress
 import httpx
 from urllib.parse import urlparse
 
@@ -51,11 +52,34 @@ def _score_to_tier(score: int) -> str:
     return "Low"
 
 
+def _ip_literal_forbidden(host: str) -> bool:
+    """
+    Block IP-literal targets in private / link-local / reserved space (SSRF hygiene).
+
+    Link-local (incl. 169.254.0.0/16) is always refused — that range hosts cloud metadata and
+    autoconf noise; ``SYNTRIX_ALLOW_PRIVATE_NETWORK_SCANS`` does not override it.
+    """
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if ip.is_link_local:
+        return True
+    if ip.is_loopback:
+        return not settings.allow_localhost_scans
+    if ip.is_private or ip.is_reserved or ip.is_unspecified:
+        return not settings.allow_private_network_scans
+    if ip.is_multicast:
+        return True
+    return False
+
+
 def _is_target_allowed(target: str) -> bool:
     """
-    Safety rail: no cloud metadata URLs, no loopback, unless you explicitly flipped localhost on.
+    Safety rail: no cloud metadata URLs, no loopback, no RFC1918 literals by default, unless env
+    flags say otherwise.
 
-    I’d rather reject a bad target up front than accidentally help someone SSRF their own infra.
+    Hostnames that resolve to private IPs are not DNS-checked here — only literal IPs in the URL.
     """
     parsed = urlparse(target)
     host = (parsed.hostname or "").lower()
@@ -63,6 +87,8 @@ def _is_target_allowed(target: str) -> bool:
         return False
     if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
         return settings.allow_localhost_scans
+    if _ip_literal_forbidden(host):
+        return False
     for pat in settings.forbidden_target_patterns:
         if pat in host or host == pat.split("/")[0]:
             return False
@@ -91,9 +117,12 @@ class ScanEngine:
                     "check_id": "TARGET_FORBIDDEN",
                     "title": "Target rejected by safety policy",
                     "severity": "info",
-                    "description": "Scanner refuses to probe this target (loopback or cloud-metadata).",
+                    "description": (
+                        "Scanner refuses to probe this target (private/link-local IP literal, "
+                        "loopback, or cloud-metadata hostname pattern)."
+                    ),
                     "evidence": req.target,
-                    "remediation": "Submit a public-facing target.",
+                    "remediation": "Submit a public-facing target, or set env flags only in trusted deployments.",
                     "owasp": None,
                 }],
                 risk_score=100,
