@@ -30,6 +30,11 @@ def _baseline_looks_like_syntrix_scanner_api(baseline_text: str) -> bool:
     return '"syntrix-scanner"' in t and '"service"' in t
 
 
+def _baseline_looks_like_ollama_http_root(baseline_text: str) -> bool:
+    """Stock Ollama HTTP bind responds to GET / with plain ``Ollama is running`` — not MCP JSON-RPC."""
+    return (baseline_text or "").strip().lower() == "ollama is running"
+
+
 async def _probe_mcp_paths(ctx: CheckContext) -> tuple[bool, str]:
     """Try common MCP paths. Returns (looks_like_mcp, evidence_string)."""
     base = ctx.target.rstrip("/")
@@ -160,7 +165,11 @@ async def check_network_exposure(ctx: CheckContext):
         ct = (baseline.headers.get("content-type") or "").lower()
         sniff = baseline_text.lstrip().lower()
         looks_like_webpage = "text/html" in ct or sniff.startswith(("<!doctype html", "<html"))
-        if not looks_like_webpage and not _baseline_looks_like_syntrix_scanner_api(baseline_text):
+        if (
+            not looks_like_webpage
+            and not _baseline_looks_like_syntrix_scanner_api(baseline_text)
+            and not _baseline_looks_like_ollama_http_root(baseline_text)
+        ):
             out.append(CheckOutcome(
                 check_id="NET-01-NOPROTO",
                 title="No MCP protocol signals detected at target",
