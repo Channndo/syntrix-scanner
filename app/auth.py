@@ -65,6 +65,28 @@ def normalize_security_answer(plain: str) -> str:
     return normalize_password_input(plain).strip().lower()
 
 
+def validate_password_policy(plain: str) -> str:
+    """
+    Registration / password-change rules (mirrors landing/assets/js/auth.js).
+    Returns normalized password; raises ValueError with a client-safe message.
+    """
+    p = normalize_password_input(plain)
+    if len(p) < 12:
+        raise ValueError("Password must be at least 12 characters.")
+    has_letter = any(c.isalpha() for c in p)
+    has_digit = any(c.isdigit() for c in p)
+    has_special = any(not c.isalnum() and not c.isspace() for c in p)
+    if not has_letter:
+        raise ValueError("Password must include at least one letter.")
+    if not has_digit:
+        raise ValueError("Password must include at least one number.")
+    if not has_special:
+        raise ValueError(
+            "Password must include at least one special character (e.g. ! @ # $ % ^ & *)."
+        )
+    return p
+
+
 def normalize_password_input(plain: str) -> str:
     """
     Remove invisible paste junk (BOM, zero-width) and accidental outer CRLF only.

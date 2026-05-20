@@ -197,7 +197,7 @@ class ScanEngine:
             limits=limits,
             headers={"User-Agent": settings.probe_user_agent},
             follow_redirects=False,
-            verify=False,
+            verify=settings.probe_tls_verify,
         ) as inner:
             pinned = DnsPinnedAsyncClient(inner, initial_host_pins=initial_pins or None)
             client = RedirectSafeAsyncClient(pinned, _is_target_allowed)

@@ -14,7 +14,6 @@ import os
 import re
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import httpx
@@ -24,9 +23,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.auth_rate_limit import client_ip, mira_rate_limit_or_429
 from app.config import settings
 from app.mira_obs import mira_obs
-from app.deps import AuthenticatedUser, optional_user
+from app.deps import AuthenticatedUser, require_user
 from app.mira_prompt import MIRA_SYSTEM_PROMPT
-from app.storage import store
 
 logger = logging.getLogger(__name__)
 
@@ -47,17 +45,6 @@ _MONTH_ABBR = (
     "Dec",
 )
 
-
-def _mira_anonymous_daily_limit_detail(limit: int) -> str:
-    """Human-readable 429 copy: next UTC midnight (Claude-style “resets at …”)."""
-    now = datetime.now(timezone.utc)
-    reset = datetime(now.year, now.month, now.day, tzinfo=timezone.utc) + timedelta(days=1)
-    m = _MONTH_ABBR[reset.month - 1]
-    reset_line = f"{m} {reset.day}, {reset.year} at 00:00 UTC"
-    return (
-        f"Rate limit reached · Resets {reset_line} · "
-        f"Sign in for higher limits ({limit} anonymous messages per UTC day)."
-    )
 
 # Roles the *client* may send. We inject the real system prompt server-side; client "system"
 # turns are ignored so they cannot sit beside or override our system message in the model API.
@@ -256,14 +243,20 @@ async def _ollama_chat_stream_aggregate(
                     error_body_chars=len(raw),
                 )
                 low = raw.lower()
-                detail = f"Model server error: {raw}"
+                logger.warning(
+                    "mira_ollama_error_body status=%s chars=%s",
+                    r.status_code,
+                    len(raw),
+                )
                 if "not found" in low and "model" in low:
                     detail = (
                         f"Ollama rejected the configured model name (OLLAMA_MODEL={model_fallback!r}). "
                         "That tag is not installed on the Ollama host. Either run "
                         f"`ollama pull {model_fallback}` there, or set OLLAMA_MODEL to a name from `ollama list` "
-                        f"(for example llama3.2:1b on a small VPS). Raw upstream: {raw}"
+                        "(for example llama3.2:1b on a small VPS)."
                     )
+                else:
+                    detail = "Model server error. Check OLLAMA_BASE_URL and OLLAMA_API_KEY on the API host."
                 raise HTTPException(
                     status_code=502,
                     detail=detail,
@@ -328,13 +321,12 @@ async def _ollama_chat_stream_aggregate(
 async def mira_chat(
     request: Request,
     payload: MiraChatBody,
-    user: Optional[AuthenticatedUser] = Depends(optional_user),
+    user: AuthenticatedUser = Depends(require_user),
 ):
     """
-    Public chat endpoint — optional JWT. Text-only (paste findings); uploads are not supported.
+    Signed-in chat only — valid Bearer JWT required. Text-only (paste findings); uploads are not supported.
 
-    Flow: sliding rate limit → anonymous UTC-day cap → build Ollama messages → stream model →
-    emit ``mira_obs`` success line.
+    Flow: sliding rate limit → build Ollama messages → stream model → emit ``mira_obs`` success line.
     """
     _require_mira_enabled()
     request_id = uuid.uuid4().hex[:16]
@@ -345,19 +337,6 @@ async def mira_chat(
         settings.mira_rate_max_requests,
         settings.mira_rate_window_sec,
     )
-    if not user:
-        if not store.try_acquire_mira_anonymous_daily_chat(ip):
-            lim = max(0, int(settings.mira_anonymous_max_per_utc_day))
-            mira_obs(
-                "mira_anonymous_daily_cap",
-                request_id=request_id,
-                ip=ip,
-                limit=lim,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=_mira_anonymous_daily_limit_detail(lim),
-            )
 
     client_chars = sum(len(m.content) for m in payload.messages)
     prep_ms = round((time.perf_counter() - t_handler_start) * 1000, 3)
@@ -365,7 +344,7 @@ async def mira_chat(
         "mira_chat_start",
         request_id=request_id,
         ip=ip,
-        authed=bool(user),
+        authed=True,
         messages=len(payload.messages),
         client_chars=client_chars,
         attachments=0,
@@ -503,7 +482,7 @@ async def mira_chat(
         "mira_chat_ok",
         request_id=request_id,
         ip=ip,
-        authed=bool(user),
+        authed=True,
         messages=len(payload.messages),
         client_chars=client_chars,
         attachments=0,

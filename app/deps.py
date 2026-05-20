@@ -8,6 +8,7 @@ FastAPI dependencies live here: ``require_user`` for “must be logged in”, ``
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -42,6 +43,10 @@ def validate_password_auth_config() -> None:
 def validate_auth_config() -> None:
     """Boot-time sanity: password stack + “auth required” flag can’t contradict each other silently."""
     validate_password_auth_config()
+    if os.getenv("RENDER") and not settings.auth_required:
+        raise RuntimeError(
+            "SYNTRIX_AUTH_REQUIRED must not be false on Render — all routes would run as a shared dev user."
+        )
     if settings.auth_required and not settings.password_auth_enabled:
         logger.warning(
             "SYNTRIX_AUTH_REQUIRED is true but SYNTRIX_PASSWORD_AUTH is false — "

@@ -38,6 +38,7 @@ from app.auth import (
     mint_password_change_session_token,
     normalize_security_answer,
     password_needs_rehash,
+    validate_password_policy,
     verify_password,
 )
 from app.auth_rate_limit import client_ip, rate_limit_or_429
@@ -84,6 +85,11 @@ class PasswordRegisterBody(BaseModel):
             raise ValueError("security questions must be different")
         return self
 
+    @field_validator("password")
+    @classmethod
+    def password_meets_policy(cls, v: str) -> str:
+        return validate_password_policy(v)
+
 
 class PasswordLoginBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -112,8 +118,13 @@ class PasswordChangeBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     current_password: str = Field(..., min_length=1, max_length=256)
-    new_password: str = Field(..., min_length=8, max_length=256)
+    new_password: str = Field(..., min_length=12, max_length=256)
     change_session_token: Optional[str] = Field(default=None, max_length=8192)
+
+    @field_validator("new_password")
+    @classmethod
+    def new_password_meets_policy(cls, v: str) -> str:
+        return validate_password_policy(v)
 
 
 def _require_password_auth_enabled() -> None:

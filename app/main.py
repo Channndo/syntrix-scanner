@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional, Literal
 from datetime import datetime, timezone
 import logging
 import os
+import secrets
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -198,6 +199,15 @@ def admin_set_password_policy(request: Request, payload: SetPasswordPolicyPayloa
     }
 
 
+def _waitlist_bearer_authorized(request: Request, secret: str) -> None:
+    auth = (request.headers.get("authorization") or "").strip()
+    if not auth.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    token = auth[7:].strip()
+    if not secrets.compare_digest(token, secret):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 @app.post("/api/public/waitlist")
 async def ingest_waitlist_lead(request: Request, payload: WaitlistIngestPayload):
     """
@@ -209,9 +219,7 @@ async def ingest_waitlist_lead(request: Request, payload: WaitlistIngestPayload)
     if not secret:
         raise HTTPException(status_code=404, detail="Not found")
 
-    auth = (request.headers.get("authorization") or "").strip()
-    if auth != f"Bearer {secret}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _waitlist_bearer_authorized(request, secret)
 
     email = payload.email.strip()[:320]
     if len(email) < 3 or "@" not in email or "." not in email.split("@", 1)[-1]:
@@ -239,9 +247,7 @@ def export_waitlist_csv_file(request: Request):
     if not secret:
         raise HTTPException(status_code=404, detail="Not found")
 
-    auth = (request.headers.get("authorization") or "").strip()
-    if auth != f"Bearer {secret}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _waitlist_bearer_authorized(request, secret)
 
     body = store.export_waitlist_csv()
     # UTF-8 BOM helps Microsoft Excel recognize encoding when double-clicking the file.
