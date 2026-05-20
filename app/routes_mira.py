@@ -25,6 +25,7 @@ from app.config import settings
 from app.mira_obs import mira_obs
 from app.deps import AuthenticatedUser, require_user
 from app.mira_prompt import MIRA_SYSTEM_PROMPT
+from app.mira_topic_guard import assess_mira_topic_scope
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +395,22 @@ async def mira_chat(
             detail="No usable user/assistant content after sanitization.",
         )
 
+    last_user = _last_client_user_content(payload.messages)
+    convo_user_text = " ".join(
+        _sanitize_mira_text(m.content)
+        for m in payload.messages
+        if m.role == "user"
+    )
+    allowed, refusal = assess_mira_topic_scope(last_user, conversation_user_text=convo_user_text)
+    if not allowed and refusal:
+        mira_obs(
+            "mira_chat_topic_rejected",
+            request_id=request_id,
+            ip=ip,
+            last_user_len=len(_sanitize_mira_text(last_user)),
+        )
+        return MiraChatResponse(message=refusal, model=model)
+
     url = f"{base}/api/chat"
     options: Dict[str, Any] = {"temperature": float(settings.ollama_temperature)}
     # CPU-only Ollama behind nginx/Render: large n_ctx or num_predict stalls first-token for minutes.
@@ -470,7 +487,6 @@ async def mira_chat(
         )
         raise HTTPException(status_code=502, detail="Empty reply from model.")
 
-    last_user = _last_client_user_content(payload.messages)
     content = _scrub_mira_likely_false_refusal(content, last_user, request_id=request_id)
 
     if len(content) > _MIRA_MAX_REPLY_CHARS:
