@@ -41,6 +41,8 @@ from app.config import settings
 from app.routes_auth import router as auth_router
 from app.routes_guest import router as guest_router
 from app.routes_mira import router as mira_router
+from app.routes_koda import router as koda_router
+from app.routes_forged_koda import router as forged_koda_router
 from app.routes_team import router as team_router
 from app.schemas_scan import ScanSubmit, ScanSubmitResponse, ScanStatusResponse
 from app.scan_runner import run_scan_background
@@ -79,6 +81,8 @@ if _trusted:
 app.include_router(auth_router, prefix="/api/auth")
 app.include_router(guest_router)
 app.include_router(mira_router, prefix="/api/mira")
+app.include_router(koda_router, prefix="/api/koda")
+app.include_router(forged_koda_router, prefix="/api/forged/koda")
 app.include_router(team_router, prefix="/api/team")
 
 

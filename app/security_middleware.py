@@ -45,7 +45,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 f"max-age={settings.security_hsts_max_age}; includeSubDomains",
             )
         # MIRA replies can be sensitive; do not let shared caches retain POST responses.
-        if request.method == "POST" and request.url.path.rstrip("/") == "/api/mira/chat":
+        path_norm = request.url.path.rstrip("/")
+        if request.method == "POST" and path_norm in (
+            "/api/mira/chat",
+            "/api/koda/chat",
+            "/api/forged/koda/chat",
+        ):
             response.headers.setdefault("Cache-Control", "no-store")
         return response
 
@@ -95,7 +100,11 @@ class MiraBodySizeLimitMiddleware(BaseHTTPMiddleware):
         if request.method != "POST":
             return await call_next(request)
         path = request.url.path
-        if path.rstrip("/") != "/api/mira/chat":
+        if path.rstrip("/") not in (
+            "/api/mira/chat",
+            "/api/koda/chat",
+            "/api/forged/koda/chat",
+        ):
             return await call_next(request)
         cl = (request.headers.get("content-length") or "").strip()
         if not cl.isdigit():

@@ -158,7 +158,9 @@ class Settings:
             "SYNTRIX_ALLOWED_ORIGINS",
             "http://localhost:3000,http://localhost:5173,"
             "http://localhost:8888,http://127.0.0.1:8888,"
-            "https://syntrix.solutions,https://www.syntrix.solutions",
+            "https://syntrix.solutions,https://www.syntrix.solutions,"
+            "https://forgedlearn.com,https://www.forgedlearn.com,"
+            "https://cover-iq.com,https://www.cover-iq.com",
         ).split(",")
         if x.strip()
     ]
@@ -244,6 +246,10 @@ class Settings:
     # Default model when OLLAMA_MODEL is unset: small CPU-friendly tag used on typical Hetzner VPS layouts.
     # ``llama3.1:8b`` in env is auto-remapped to ``llama3.2:1b`` unless SYNTRIX_DISABLE_OLLAMA_MODEL_AUTO_CORRECT=true.
     mira_enabled: bool = _to_bool(os.getenv("SYNTRIX_MIRA_ENABLED"), True)
+    # ForgEd KODA — same Ollama host as MIRA; JWT routes under /api/koda; server bridge under /api/forged/koda.
+    koda_enabled: bool = _to_bool(os.getenv("SYNTRIX_KODA_ENABLED"), True)
+    # Shared secret with ForgEd Netlify (FORGED_SERVER_SECRET) for /api/forged/koda/* server-to-server proxy.
+    forged_server_secret: str = os.getenv("FORGED_SERVER_SECRET", "").strip()
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/")
     ollama_model: str = resolved_ollama_model_from_env()
     ollama_temperature: float = _float_env("OLLAMA_TEMPERATURE", 0.4)
