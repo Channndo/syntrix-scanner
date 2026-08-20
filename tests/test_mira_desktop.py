@@ -36,6 +36,9 @@ def releases_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (d / "latest-mac.yml").write_text("version: 1.0.0\npath: MIRA-1.0.0-mac.zip\n", encoding="utf-8")
     (d / "MIRA-1.0.0-mac.zip").write_bytes(b"zip-bytes")
     (d / "MIRA-1.0.0.dmg").write_bytes(b"dmg-bytes")
+    (d / "latest.yml").write_text("version: 1.0.0\npath: MIRA-1.0.0-setup.exe\n", encoding="utf-8")
+    (d / "MIRA-1.0.0-setup.exe").write_bytes(b"exe-bytes")
+    (d / "MIRA-1.0.0-portable.exe").write_bytes(b"portable-bytes")
     monkeypatch.setattr(settings, "mira_releases_dir", str(d))
     monkeypatch.setattr(settings, "mira_desktop_gate", True)
     return d
@@ -47,8 +50,12 @@ def test_desktop_status_public(releases_dir: Path):
         assert r.status_code == 200
         body = r.json()
         assert body["has_update_feed"] is True
+        assert body["has_mac_update_feed"] is True
+        assert body["has_win_update_feed"] is True
         assert body["has_dmg"] is True
+        assert body["has_win_installer"] is True
         assert body["gate"] is True
+        assert "win" in body["platforms"]
 
 
 def test_download_requires_auth(releases_dir: Path):
@@ -103,6 +110,31 @@ def test_subscriber_can_download_dmg(releases_dir: Path):
         app.dependency_overrides = {}
 
 
+def test_subscriber_can_download_windows(releases_dir: Path):
+    _reset_db()
+    app.dependency_overrides = {}
+    user = AuthenticatedUser(sub="u-paid", email="paid@example.com", raw_claims={})
+    store.ensure_user(user.sub, user.email)
+    store.set_subscription(user.sub, status="active", plan_id="price_pro")
+    app.dependency_overrides[require_user] = lambda: user
+    try:
+        with TestClient(app) as client:
+            r = client.get("/api/mira/desktop/download?platform=win")
+            assert r.status_code == 200
+            assert r.content == b"exe-bytes"
+            portable = client.get("/api/mira/desktop/download?platform=windows&artifact=portable")
+            assert portable.status_code == 200
+            assert portable.content == b"portable-bytes"
+            yml = client.get("/api/mira/desktop/releases/latest.yml")
+            assert yml.status_code == 200
+            assert b"MIRA-1.0.0-setup.exe" in yml.content
+            exe = client.get("/api/mira/desktop/releases/MIRA-1.0.0-setup.exe")
+            assert exe.status_code == 200
+            assert exe.content == b"exe-bytes"
+    finally:
+        app.dependency_overrides = {}
+
+
 def test_admin_can_download_without_subscription(releases_dir: Path, monkeypatch: pytest.MonkeyPatch):
     _reset_db()
     app.dependency_overrides = {}
@@ -114,6 +146,8 @@ def test_admin_can_download_without_subscription(releases_dir: Path, monkeypatch
         with TestClient(app) as client:
             r = client.get("/api/mira/desktop/download")
             assert r.status_code == 200
+            win = client.get("/api/mira/desktop/download?platform=win")
+            assert win.status_code == 200
             ent = client.get("/api/mira/desktop/entitlement")
             assert ent.json()["entitled"] is True
             assert ent.json()["reason"] == "admin"

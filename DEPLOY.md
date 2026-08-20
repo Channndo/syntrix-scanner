@@ -26,8 +26,8 @@ Deploy this service to **`https://api.syntrix.solutions`** so MIRA can sync find
 |--------|------|------|---------|
 | GET | `/api/mira/desktop/status` | public | Feed readiness (no filenames dump) |
 | GET | `/api/mira/desktop/entitlement` | JWT | `{ entitled, reason }` for marketing UI |
-| GET | `/api/mira/desktop/download` | JWT + **admin \| paid** | Stream latest `.dmg` (or zip) |
-| GET | `/api/mira/desktop/releases/{file}` | JWT + **admin \| paid** | electron-updater generic feed |
+| GET | `/api/mira/desktop/download` | JWT + **admin \| paid** | Stream latest installer (`?platform=mac\|win`) |
+| GET | `/api/mira/desktop/releases/{file}` | JWT + **admin \| paid** | electron-updater generic feed (Mac + Windows) |
 
 **Who is entitled**
 
@@ -42,9 +42,13 @@ Set `MIRA_RELEASES_DIR` (default `/data/mira-releases` on Render when `/data` ex
 
 ```text
 /data/mira-releases/
-  latest-mac.yml          # from electron-builder
-  MIRA-<version>-mac.zip  # required for auto-update
-  MIRA-<version>.dmg      # website Download button
+  latest-mac.yml              # electron-builder (macOS)
+  MIRA-<version>-mac.zip      # required for macOS auto-update
+  MIRA-<version>.dmg          # website Download (macOS)
+  latest.yml                  # electron-builder (Windows)
+  MIRA-<version>-setup.exe    # website Download + Windows auto-update
+  MIRA-<version>-setup.exe.blockmap   # optional
+  MIRA-<version>-portable.exe         # optional
 ```
 
 ```bash
@@ -52,6 +56,13 @@ Set `MIRA_RELEASES_DIR` (default `/data/mira-releases` on Render when `/data` ex
 scp dist/electron/latest-mac.yml \
     dist/electron/MIRA-*-mac.zip \
     dist/electron/*.dmg \
+    render-shell:/data/mira-releases/
+
+# From Windows after npm run build:win
+scp dist/electron/latest.yml \
+    dist/electron/MIRA-*-setup.exe \
+    dist/electron/MIRA-*-setup.exe.blockmap \
+    dist/electron/MIRA-*-portable.exe \
     render-shell:/data/mira-releases/
 ```
 
@@ -75,7 +86,9 @@ curl -sS -H "Authorization: Bearer $TOKEN" https://api.syntrix.solutions/api/v1/
 curl -sS -H "Authorization: Bearer $TOKEN" "https://api.syntrix.solutions/api/v1/findings?status=open&limit=5"
 curl -sS https://api.syntrix.solutions/api/mira/desktop/status
 curl -sS -H "Authorization: Bearer $TOKEN" \
-  -OJ "https://api.syntrix.solutions/api/mira/desktop/download"
+  -OJ "https://api.syntrix.solutions/api/mira/desktop/download?platform=mac"
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  -OJ "https://api.syntrix.solutions/api/mira/desktop/download?platform=win"
 ```
 
 ## Deploy steps (Render)
