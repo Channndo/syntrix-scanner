@@ -42,6 +42,34 @@ def _is_active_subscription(status: str) -> bool:
     return status in {"active", "trialing"}
 
 
+def user_has_mira_desktop_entitlement(user: AuthenticatedUser) -> bool:
+    """Admin or Stripe active/trialing — used for DMG download + electron-updater feed.
+
+    Independent of ``SYNTRIX_BILLING_REQUIRED`` so the desktop paywall can ship before
+    scanner routes require billing. Set ``SYNTRIX_MIRA_DESKTOP_GATE=false`` to allow any
+    authenticated user (local/dev).
+    """
+    if not settings.mira_desktop_gate:
+        return True
+    em = store.canonical_email_for_sub(user.sub, user.email)
+    if settings.is_admin_email(em):
+        return True
+    sub = store.get_subscription(user.sub)
+    return _is_active_subscription(str(sub.get("status") or "inactive"))
+
+
+def require_mira_desktop_entitlement(
+    user: AuthenticatedUser = Depends(require_user),
+) -> AuthenticatedUser:
+    """Gate MIRA desktop download / update artifacts (admin | paid subscription)."""
+    if user_has_mira_desktop_entitlement(user):
+        return user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="MIRA desktop requires an admin account or an active paid subscription. Visit billing to upgrade.",
+    )
+
+
 def require_active_subscription(
     user: AuthenticatedUser = Depends(require_authorized_account),
 ) -> AuthenticatedUser:

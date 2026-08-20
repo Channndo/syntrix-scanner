@@ -42,6 +42,7 @@ from app.auth import (
     verify_password,
 )
 from app.auth_rate_limit import client_ip, rate_limit_or_429
+from app.billing import user_has_mira_desktop_entitlement
 from app.config import settings
 from app.deps import AuthenticatedUser, require_user
 from app.plan_tier import subscription_plan_tier
@@ -213,11 +214,13 @@ def _me_json(user: AuthenticatedUser, raw_row: Optional[Dict[str, Any]]) -> Dict
 
     subrec = store.get_subscription(sub)
     admin_unlimited = settings.is_admin_email(email)
+    entitled = user_has_mira_desktop_entitlement(user)
     return {
         "id": _public_id(sub),
         "email": email,
         "role": role,
         "scanner_unlimited": admin_unlimited,
+        "mira_desktop_entitled": entitled,
         "first_name": fn,
         "last_name": ln,
         "created_at": created_at,

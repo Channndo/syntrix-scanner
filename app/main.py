@@ -41,9 +41,11 @@ from app.config import settings
 from app.routes_auth import router as auth_router
 from app.routes_guest import router as guest_router
 from app.routes_mira import router as mira_router
+from app.routes_mira_desktop import router as mira_desktop_router
 from app.routes_koda import router as koda_router
 from app.routes_forged_koda import router as forged_koda_router
 from app.routes_team import router as team_router
+from app.routes_integrations_v1 import router as integrations_v1_router
 from app.schemas_scan import ScanSubmit, ScanSubmitResponse, ScanStatusResponse
 from app.scan_runner import run_scan_background
 from app.security_middleware import (
@@ -81,9 +83,11 @@ if _trusted:
 app.include_router(auth_router, prefix="/api/auth")
 app.include_router(guest_router)
 app.include_router(mira_router, prefix="/api/mira")
+app.include_router(mira_desktop_router, prefix="/api/mira")
 app.include_router(koda_router, prefix="/api/koda")
 app.include_router(forged_koda_router, prefix="/api/forged/koda")
 app.include_router(team_router, prefix="/api/team")
+app.include_router(integrations_v1_router, prefix="/api/v1")
 
 
 @app.get("/api/mira", tags=["mira"])
@@ -94,6 +98,10 @@ def mira_service_index():
         "paths": {
             "status": "/api/mira/status",
             "chat": "/api/mira/chat",
+            "desktop_status": "/api/mira/desktop/status",
+            "desktop_download": "/api/mira/desktop/download",
+            "desktop_entitlement": "/api/mira/desktop/entitlement",
+            "desktop_releases": "/api/mira/desktop/releases",
         },
     }
     if settings.mira_enabled:

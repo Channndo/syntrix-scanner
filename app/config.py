@@ -18,6 +18,16 @@ def _default_sqlite_path() -> str:
     return "syntrix.db"
 
 
+def _default_mira_releases_dir() -> str:
+    """Private on-disk feed for MIRA DMG/zip/yml (not a public CDN)."""
+    explicit = (os.getenv("MIRA_RELEASES_DIR") or "").strip()
+    if explicit:
+        return explicit
+    if os.getenv("RENDER") and os.path.isdir("/data"):
+        return "/data/mira-releases"
+    return "mira-releases"
+
+
 def _to_bool(raw: str, default: bool = False) -> bool:
     """Env truthiness without surprises — only 1/true/yes/on count as True."""
     if raw is None:
@@ -219,6 +229,12 @@ class Settings:
     stripe_price_pro: str = os.getenv("STRIPE_PRICE_PRO", "")
     stripe_price_team: str = os.getenv("STRIPE_PRICE_TEAM", "")
     app_base_url: str = os.getenv("APP_BASE_URL", "https://syntrix.solutions")
+
+    # MIRA desktop DMG/zip feed — private directory served only to admin | paid subscribers.
+    # Upload latest-mac.yml + MIRA-*-mac.zip (+ optional .dmg) into this folder on the API host.
+    mira_releases_dir: str = _default_mira_releases_dir()
+    # When true (default), download/update require admin or active/trialing Stripe subscription.
+    mira_desktop_gate: bool = _to_bool(os.getenv("SYNTRIX_MIRA_DESKTOP_GATE"), True)
 
     # Netlify signup-notify can POST early-access rows here using Authorization: Bearer <secret>
     waitlist_ingest_secret: str = os.getenv("SYNTRIX_WAITLIST_INGEST_SECRET", "")
