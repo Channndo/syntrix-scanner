@@ -98,11 +98,13 @@ def _file_response(path: Path) -> FileResponse:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Release artifact not found: {path.name}. Upload builds to MIRA_RELEASES_DIR.",
         )
+    # electron-updater reads YAML as a body; attachment disposition can confuse some clients.
+    as_attachment = path.suffix.lower() not in {".yml", ".yaml"}
     return FileResponse(
         path,
         media_type=_media_type(path),
-        filename=path.name,
-        content_disposition_type="attachment",
+        filename=path.name if as_attachment else None,
+        content_disposition_type="attachment" if as_attachment else "inline",
     )
 
 
